@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLabDeployBar
 // @namespace    local.tampermonkey.gitlab-deploy-bar
-// @version      1.12
+// @version      1.13
 // @description  Show the latest successful deploy job per environment at the top of GitLab project pages
 // @match        *://*/*
 // @grant        none
@@ -189,6 +189,33 @@
         }
     }
 
+    // MR-pipeline jobs return `refName` as `refs/merge-requests/<iid>/head`
+    // (or `/merge` for merged-result pipelines). That literal ref is useless
+    // in the bar — look the MR up to display the source branch instead.
+    const MR_REF_RE = /^refs\/merge-requests\/(\d+)\/(?:head|merge)$/;
+    async function fetchMergeRequestForRef(projectPath, refName) {
+        const match = refName?.match(MR_REF_RE);
+        if (!match) return null;
+        const iid = match[1];
+        const encoded = encodeURIComponent(projectPath);
+        try {
+            const resp = await fetchWithTimeout(
+                `/api/v4/projects/${encoded}/merge_requests/${iid}`,
+                { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+            );
+            if (!resp.ok) return null;
+            const mr = await resp.json();
+            return {
+                iid:          mr.iid,
+                sourceBranch: mr.source_branch,
+                title:        mr.title,
+                webUrl:       mr.web_url,
+            };
+        } catch {
+            return null;
+        }
+    }
+
     async function fetchLatestForEnv(projectPath, jobName) {
         const headers = {
             'Content-Type': 'application/json',
@@ -223,7 +250,10 @@
         if (!node) return { jobName, job: null };
 
         const jobId = parseGid(node.id);
-        const user = jobId ? await fetchJobUser(projectPath, jobId) : null;
+        const [user, mr] = await Promise.all([
+            jobId ? fetchJobUser(projectPath, jobId) : Promise.resolve(null),
+            fetchMergeRequestForRef(projectPath, node.refName),
+        ]);
 
         return {
             jobName,
@@ -232,6 +262,7 @@
                 name: node.name,
                 webUrl: node.webPath ? new URL(node.webPath, location.origin).href : null,
                 ref: node.refName,
+                mr,
                 finishedAt: node.finishedAt,
                 user: user || node.pipeline?.user || null,
             },
@@ -322,7 +353,14 @@
                 when.style.cssText = 'opacity:.6;';
                 card.appendChild(when);
 
-                const label = job.ref || `#${job.id}`;
+                const label = job.mr?.sourceBranch
+                    || job.ref
+                    || `#${job.id}`;
+                const titleBits = [];
+                if (job.mr) titleBits.push(`MR !${job.mr.iid}${job.mr.title ? ` — ${job.mr.title}` : ''}`);
+                if (job.ref) titleBits.push(`ref ${job.ref}`);
+                titleBits.push(`job #${job.id}`);
+
                 let ref;
                 if (job.webUrl) {
                     ref = document.createElement('a');
@@ -333,7 +371,7 @@
                     ref.style.cssText = 'color:#60a5fa;';
                 }
                 ref.textContent = label;
-                ref.title = job.ref ? `job #${job.id}` : '';
+                ref.title = titleBits.join(' · ');
                 card.appendChild(ref);
             } else {
                 const none = document.createElement('span');
