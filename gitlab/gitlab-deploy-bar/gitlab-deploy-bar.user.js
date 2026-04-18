@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLabDeployBar
 // @namespace    local.tampermonkey.gitlab-deploy-bar
-// @version      1.12
+// @version      1.15
 // @description  Show the latest successful deploy job per environment at the top of GitLab project pages
 // @match        *://*/*
 // @grant        none
@@ -189,6 +189,30 @@
         }
     }
 
+    // MR-pipeline deploys carry refs like `refs/merge-requests/123/head`
+    // instead of a branch name. Extract the IID so we can resolve the
+    // source branch via REST.
+    const MR_REF_RE = /^refs\/merge-requests\/(\d+)\/[\w-]+$/;
+    function mrIidFromRef(refName) {
+        const m = refName?.match(MR_REF_RE);
+        return m ? m[1] : null;
+    }
+
+    async function fetchMrSourceBranch(projectPath, iid) {
+        const encoded = encodeURIComponent(projectPath);
+        try {
+            const resp = await fetchWithTimeout(
+                `/api/v4/projects/${encoded}/merge_requests/${iid}`,
+                { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+            );
+            if (!resp.ok) return null;
+            const mr = await resp.json();
+            return mr?.source_branch || null;
+        } catch {
+            return null;
+        }
+    }
+
     async function fetchLatestForEnv(projectPath, jobName) {
         const headers = {
             'Content-Type': 'application/json',
@@ -223,7 +247,11 @@
         if (!node) return { jobName, job: null };
 
         const jobId = parseGid(node.id);
-        const user = jobId ? await fetchJobUser(projectPath, jobId) : null;
+        const mrIid = mrIidFromRef(node.refName);
+        const [user, mrBranch] = await Promise.all([
+            jobId ? fetchJobUser(projectPath, jobId) : Promise.resolve(null),
+            mrIid ? fetchMrSourceBranch(projectPath, mrIid) : Promise.resolve(null),
+        ]);
 
         return {
             jobName,
@@ -232,6 +260,8 @@
                 name: node.name,
                 webUrl: node.webPath ? new URL(node.webPath, location.origin).href : null,
                 ref: node.refName,
+                mrIid,
+                mrBranch,
                 finishedAt: node.finishedAt,
                 user: user || node.pipeline?.user || null,
             },
@@ -322,7 +352,10 @@
                 when.style.cssText = 'opacity:.6;';
                 card.appendChild(when);
 
-                const label = job.ref || `#${job.id}`;
+                const label = job.mrBranch
+                    || (job.mrIid ? `!${job.mrIid}` : null)
+                    || job.ref
+                    || `#${job.id}`;
                 let ref;
                 if (job.webUrl) {
                     ref = document.createElement('a');
@@ -333,7 +366,11 @@
                     ref.style.cssText = 'color:#60a5fa;';
                 }
                 ref.textContent = label;
-                ref.title = job.ref ? `job #${job.id}` : '';
+                const titleParts = [];
+                if (job.id) titleParts.push(`job #${job.id}`);
+                if (job.mrIid) titleParts.push(`MR !${job.mrIid}`);
+                if (job.ref) titleParts.push(job.ref);
+                ref.title = titleParts.join(' · ');
                 card.appendChild(ref);
             } else {
                 const none = document.createElement('span');
