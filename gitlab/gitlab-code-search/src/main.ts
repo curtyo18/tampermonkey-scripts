@@ -19,10 +19,9 @@ function getNativeQuery(): string {
 }
 
 function hideNativeResults(): void {
-  const native = document.querySelector<HTMLElement>(
+  document.querySelectorAll<HTMLElement>(
     '.results-list, .search-results-list, .search-results ul',
-  );
-  if (native) native.style.display = 'none';
+  ).forEach(el => { el.style.display = 'none'; });
 }
 
 function findInjectionPoint(): HTMLElement | null {
@@ -82,7 +81,10 @@ function cleanup(): void {
 function init(): void {
   cleanup();
   const injectionPoint = findInjectionPoint();
-  if (!injectionPoint) return;
+  if (!injectionPoint) {
+    console.warn('[gcs] Could not find injection point — DOM selectors may need updating for this GitLab version');
+    return;
+  }
 
   hideNativeResults();
 

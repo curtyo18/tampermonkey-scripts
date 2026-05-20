@@ -352,10 +352,11 @@
     return input?.value.trim() ?? "";
   }
   function hideNativeResults() {
-    const native = document.querySelector(
+    document.querySelectorAll(
       ".results-list, .search-results-list, .search-results ul"
-    );
-    if (native) native.style.display = "none";
+    ).forEach((el) => {
+      el.style.display = "none";
+    });
   }
   function findInjectionPoint() {
     return document.querySelector(".results-list")?.parentElement ?? document.querySelector(".search-results-list")?.parentElement ?? document.querySelector("main");
@@ -397,7 +398,10 @@
   function init() {
     cleanup();
     const injectionPoint = findInjectionPoint();
-    if (!injectionPoint) return;
+    if (!injectionPoint) {
+      console.warn("[gcs] Could not find injection point \u2014 DOM selectors may need updating for this GitLab version");
+      return;
+    }
     hideNativeResults();
     const container = createResultsContainer();
     const toolbar = createExportToolbar(() => allResults);
