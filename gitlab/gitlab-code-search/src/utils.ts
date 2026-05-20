@@ -3,6 +3,7 @@ import type { FilterState, SearchResult } from './types.js';
 export function resolveApiEndpoint(pathname: string, projectId: number | null): string {
   if (/^\/-\/search/.test(pathname)) return '/api/v4/search';
 
+  // .+? intentionally matches slashes — GitLab nested groups use /groups/parent/child/-/search
   const groupMatch = pathname.match(/^\/groups\/(.+?)\/-\/search/);
   if (groupMatch) return `/api/v4/groups/${groupMatch[1]}/search`;
 
@@ -12,6 +13,8 @@ export function resolveApiEndpoint(pathname: string, projectId: number | null): 
 }
 
 export function buildQuery(mainQuery: string, filters: Partial<FilterState>): string {
+  // GitLab's filter syntax (extension:X, filename:X, path:X) does not support quoting,
+  // so filter values with spaces will behave unexpectedly — UI controls should prevent this.
   const parts: string[] = [mainQuery.trim()];
   for (const ext of (filters.extensions ?? [])) {
     if (ext) parts.push(`extension:${ext}`);

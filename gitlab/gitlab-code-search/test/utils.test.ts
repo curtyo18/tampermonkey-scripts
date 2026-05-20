@@ -82,6 +82,11 @@ describe('extractRepoPaths', () => {
     expect(extractRepoPaths([r('z/z/x.ts'), r('a/a/x.ts')])).toEqual(['a/a', 'z/z']);
   });
 
+  it('takes the first two segments from deep paths', () => {
+    const r = (path: string): SearchResult => ({ path, project_id: 1, filename: '', ref: 'main', startline: 1 });
+    expect(extractRepoPaths([r('org/repo/src/deep/file.ts')])).toEqual(['org/repo']);
+  });
+
   it('returns empty array for empty input', () => {
     expect(extractRepoPaths([])).toEqual([]);
   });
