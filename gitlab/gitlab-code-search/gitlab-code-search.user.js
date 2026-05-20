@@ -123,7 +123,9 @@
     extInput.placeholder = "js, ts\u2026";
     extInput.style.cssText = "border:none;outline:none;width:70px;font:inherit;";
     function renderTags() {
-      tagRow.innerHTML = "";
+      Array.from(tagRow.children).forEach((child) => {
+        if (child !== extInput) tagRow.removeChild(child);
+      });
       for (const ext of state.extensions) {
         const tag = document.createElement("span");
         tag.style.cssText = "background:#e2e8f0;border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;";
@@ -137,9 +139,8 @@
           onChange({ ...state });
         });
         tag.appendChild(rm);
-        tagRow.appendChild(tag);
+        tagRow.insertBefore(tag, extInput);
       }
-      tagRow.appendChild(extInput);
     }
     extInput.addEventListener("keydown", (e) => {
       const val = extInput.value.trim().replace(/^\./, "");
@@ -286,12 +287,19 @@
     }));
     const copyBtn = makeToolbarBtn("Copy repos", async () => {
       const repos = extractRepoPaths(getAllResults()).join("\n");
-      await navigator.clipboard.writeText(repos);
-      const orig = copyBtn.textContent ?? "";
-      copyBtn.textContent = "Copied!";
-      setTimeout(() => {
-        copyBtn.textContent = orig;
-      }, 1500);
+      try {
+        await navigator.clipboard.writeText(repos);
+        const orig = copyBtn.textContent ?? "";
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => {
+          copyBtn.textContent = orig;
+        }, 1500);
+      } catch {
+        copyBtn.textContent = "Copy failed";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy repos";
+        }, 2e3);
+      }
     });
     toolbar.appendChild(copyBtn);
     return toolbar;
@@ -361,12 +369,11 @@
   function findInjectionPoint() {
     return document.querySelector(".results-list")?.parentElement ?? document.querySelector(".search-results-list")?.parentElement ?? document.querySelector("main");
   }
-  var allResults = [];
-  async function runSearch(container, filterState) {
+  async function runSearch(container, filterState, session) {
     const query = buildQuery(getNativeQuery(), filterState);
     if (!query) return;
     const endpoint = resolveApiEndpoint(location.pathname, getProjectId());
-    allResults = [];
+    session.results = [];
     container.clear();
     function handleError(err) {
       if (err.status === 401 || err.status === 403) {
@@ -378,14 +385,14 @@
       }
     }
     try {
-      allResults = await fetchAllPages(endpoint, query, {
+      session.results = await fetchAllPages(endpoint, query, {
         onBatch(batch, loaded, total) {
           container.appendResults(batch);
           container.setStatus(loaded, total);
         },
         onError: handleError
       });
-      if (allResults.length === 0) container.setStatus(0, 0);
+      if (session.results.length === 0) container.setStatus(0, 0);
     } catch (err) {
       handleError(err);
     }
@@ -403,15 +410,16 @@
       return;
     }
     hideNativeResults();
+    const session = { results: [] };
     const container = createResultsContainer();
-    const toolbar = createExportToolbar(() => allResults);
+    const toolbar = createExportToolbar(() => session.results);
     const { panel } = createFilterPanel((state) => {
-      void runSearch(container, state);
+      void runSearch(container, state, session);
     });
     injectionPoint.insertBefore(panel, injectionPoint.firstChild);
     panel.insertAdjacentElement("afterend", container.el);
     container.el.insertAdjacentElement("afterend", toolbar);
-    void runSearch(container, { extensions: [], filename: "", path: "", mode: "fuzzy" });
+    void runSearch(container, { extensions: [], filename: "", path: "", mode: "fuzzy" }, session);
   }
   function waitForDom(callback) {
     const selectors = [".results-list", ".search-results-list", "main"];

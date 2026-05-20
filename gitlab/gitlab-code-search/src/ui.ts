@@ -30,7 +30,10 @@ export function createFilterPanel(onChange: (state: FilterState) => void): Filte
   extInput.style.cssText = 'border:none;outline:none;width:70px;font:inherit;';
 
   function renderTags(): void {
-    tagRow.innerHTML = '';
+    // Remove tag spans only; leave extInput in place to preserve focus and input state
+    Array.from(tagRow.children).forEach(child => {
+      if (child !== extInput) tagRow.removeChild(child);
+    });
     for (const ext of state.extensions) {
       const tag = document.createElement('span');
       tag.style.cssText = 'background:#e2e8f0;border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;';
@@ -44,9 +47,8 @@ export function createFilterPanel(onChange: (state: FilterState) => void): Filte
         onChange({ ...state });
       });
       tag.appendChild(rm);
-      tagRow.appendChild(tag);
+      tagRow.insertBefore(tag, extInput);
     }
-    tagRow.appendChild(extInput);
   }
 
   extInput.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -221,10 +223,15 @@ export function createExportToolbar(getAllResults: () => SearchResult[]): HTMLDi
 
   const copyBtn = makeToolbarBtn('Copy repos', async () => {
     const repos = extractRepoPaths(getAllResults()).join('\n');
-    await navigator.clipboard.writeText(repos);
-    const orig = copyBtn.textContent ?? '';
-    copyBtn.textContent = 'Copied!';
-    setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    try {
+      await navigator.clipboard.writeText(repos);
+      const orig = copyBtn.textContent ?? '';
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    } catch {
+      copyBtn.textContent = 'Copy failed';
+      setTimeout(() => { copyBtn.textContent = 'Copy repos'; }, 2000);
+    }
   });
   toolbar.appendChild(copyBtn);
 

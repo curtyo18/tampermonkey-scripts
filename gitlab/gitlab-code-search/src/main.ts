@@ -32,18 +32,14 @@ function findInjectionPoint(): HTMLElement | null {
   );
 }
 
-// ── State ─────────────────────────────────────────────────────────────
-
-let allResults: SearchResult[] = [];
-
 // ── Search ────────────────────────────────────────────────────────────
 
-async function runSearch(container: ResultsContainer, filterState: FilterState): Promise<void> {
+async function runSearch(container: ResultsContainer, filterState: FilterState, session: { results: SearchResult[] }): Promise<void> {
   const query = buildQuery(getNativeQuery(), filterState);
   if (!query) return;
 
   const endpoint = resolveApiEndpoint(location.pathname, getProjectId());
-  allResults = [];
+  session.results = [];
   container.clear();
 
   function handleError(err: ApiError): void {
@@ -57,14 +53,14 @@ async function runSearch(container: ResultsContainer, filterState: FilterState):
   }
 
   try {
-    allResults = await fetchAllPages(endpoint, query, {
+    session.results = await fetchAllPages(endpoint, query, {
       onBatch(batch, loaded, total) {
         container.appendResults(batch);
         container.setStatus(loaded, total);
       },
       onError: handleError,
     });
-    if (allResults.length === 0) container.setStatus(0, 0);
+    if (session.results.length === 0) container.setStatus(0, 0);
   } catch (err) {
     handleError(err as ApiError);
   }
@@ -88,15 +84,16 @@ function init(): void {
 
   hideNativeResults();
 
+  const session = { results: [] as SearchResult[] };
   const container = createResultsContainer();
-  const toolbar = createExportToolbar(() => allResults);
-  const { panel } = createFilterPanel(state => { void runSearch(container, state); });
+  const toolbar = createExportToolbar(() => session.results);
+  const { panel } = createFilterPanel(state => { void runSearch(container, state, session); });
 
   injectionPoint.insertBefore(panel, injectionPoint.firstChild);
   panel.insertAdjacentElement('afterend', container.el);
   container.el.insertAdjacentElement('afterend', toolbar);
 
-  void runSearch(container, { extensions: [], filename: '', path: '', mode: 'fuzzy' });
+  void runSearch(container, { extensions: [], filename: '', path: '', mode: 'fuzzy' }, session);
 }
 
 function waitForDom(callback: () => void): void {
