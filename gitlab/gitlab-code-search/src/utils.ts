@@ -11,6 +11,15 @@ export function resolveApiEndpoint(pathname: string, projectId: number | null): 
   return '/api/v4/search';
 }
 
-export function buildQuery(mainQuery: string, filters: Partial<FilterState>): string { return ''; }
+export function buildQuery(mainQuery: string, filters: Partial<FilterState>): string {
+  const parts: string[] = [mainQuery.trim()];
+  for (const ext of (filters.extensions ?? [])) {
+    if (ext) parts.push(`extension:${ext}`);
+  }
+  if (filters.filename) parts.push(`filename:${filters.filename}`);
+  if (filters.path) parts.push(`path:${filters.path}`);
+  return parts.filter(Boolean).join(' ');
+}
+
 export function extractRepoPaths(results: SearchResult[]): string[] { return []; }
 export function toCsv(results: SearchResult[]): string { return ''; }
