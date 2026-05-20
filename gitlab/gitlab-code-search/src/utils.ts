@@ -21,5 +21,18 @@ export function buildQuery(mainQuery: string, filters: Partial<FilterState>): st
   return parts.filter(Boolean).join(' ');
 }
 
-export function extractRepoPaths(results: SearchResult[]): string[] { return []; }
-export function toCsv(results: SearchResult[]): string { return ''; }
+export function extractRepoPaths(results: SearchResult[]): string[] {
+  const seen = new Set<string>();
+  for (const r of results) {
+    const segs = (r.path ?? '').split('/');
+    if (segs.length >= 2) seen.add(`${segs[0]}/${segs[1]}`);
+  }
+  return [...seen].sort();
+}
+
+export function toCsv(results: SearchResult[]): string {
+  const cols: (keyof SearchResult)[] = ['project_id', 'path', 'filename', 'ref', 'startline'];
+  const esc = (v: unknown): string => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = results.map(r => cols.map(c => esc(r[c])).join(','));
+  return [cols.join(','), ...rows].join('\n');
+}
