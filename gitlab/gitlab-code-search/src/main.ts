@@ -1,3 +1,141 @@
+import type { FilterState, ApiError } from './types.js';
 import { resolveApiEndpoint, buildQuery } from './utils.js';
 import { fetchAllPages } from './api.js';
 import { createFilterPanel, createResultsContainer, createExportToolbar } from './ui.js';
+import type { SearchResult, ResultsContainer } from './types.js';
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+function getProjectId(): number | null {
+  const raw = (document.body as HTMLElement & { dataset: DOMStringMap }).dataset.projectId;
+  return raw ? parseInt(raw, 10) : null;
+}
+
+function getNativeQuery(): string {
+  const input = document.querySelector<HTMLInputElement>(
+    'input[data-testid="search-page-input"], input[name="search"]',
+  );
+  return input?.value.trim() ?? '';
+}
+
+function hideNativeResults(): void {
+  const native = document.querySelector<HTMLElement>(
+    '.results-list, .search-results-list, .search-results ul',
+  );
+  if (native) native.style.display = 'none';
+}
+
+function findInjectionPoint(): HTMLElement | null {
+  return (
+    document.querySelector<HTMLElement>('.results-list')?.parentElement ??
+    document.querySelector<HTMLElement>('.search-results-list')?.parentElement ??
+    document.querySelector<HTMLElement>('main')
+  );
+}
+
+// ── State ─────────────────────────────────────────────────────────────
+
+let allResults: SearchResult[] = [];
+
+// ── Search ────────────────────────────────────────────────────────────
+
+async function runSearch(container: ResultsContainer, filterState: FilterState): Promise<void> {
+  const query = buildQuery(getNativeQuery(), filterState);
+  if (!query) return;
+
+  const endpoint = resolveApiEndpoint(location.pathname, getProjectId());
+  allResults = [];
+  container.clear();
+
+  function handleError(err: ApiError): void {
+    if (err.status === 401 || err.status === 403) {
+      container.setError('Not authorised — are you logged in?');
+    } else if (err.status === 404) {
+      container.setError('Search endpoint not found — is Advanced Search enabled on this instance?');
+    } else {
+      container.setError(`Search failed: ${err.message}`);
+    }
+  }
+
+  try {
+    allResults = await fetchAllPages(endpoint, query, {
+      onBatch(batch, loaded, total) {
+        container.appendResults(batch);
+        container.setStatus(loaded, total);
+      },
+      onError: handleError,
+    });
+    if (allResults.length === 0) container.setStatus(0, 0);
+  } catch (err) {
+    handleError(err as ApiError);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+
+function cleanup(): void {
+  document.getElementById('gcs-panel')?.remove();
+  document.getElementById('gcs-results')?.remove();
+  document.getElementById('gcs-toolbar')?.remove();
+}
+
+function init(): void {
+  cleanup();
+  const injectionPoint = findInjectionPoint();
+  if (!injectionPoint) return;
+
+  hideNativeResults();
+
+  const container = createResultsContainer();
+  const toolbar = createExportToolbar(() => allResults);
+  const { panel } = createFilterPanel(state => { void runSearch(container, state); });
+
+  injectionPoint.insertBefore(panel, injectionPoint.firstChild);
+  panel.insertAdjacentElement('afterend', container.el);
+  container.el.insertAdjacentElement('afterend', toolbar);
+
+  void runSearch(container, { extensions: [], filename: '', path: '', mode: 'fuzzy' });
+}
+
+function waitForDom(callback: () => void): void {
+  const selectors = ['.results-list', '.search-results-list', 'main'];
+  if (selectors.some(s => document.querySelector(s))) { callback(); return; }
+
+  const obs = new MutationObserver(() => {
+    if (selectors.some(s => document.querySelector(s))) {
+      obs.disconnect();
+      clearTimeout(timer);
+      callback();
+    }
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+  const timer = setTimeout(() => { obs.disconnect(); callback(); }, 3000);
+}
+
+// ── SPA navigation ────────────────────────────────────────────────────
+
+(function (h: History) {
+  const fire = (): void => { window.dispatchEvent(new Event('gcs-nav')); };
+  const ps = h.pushState.bind(h);
+  const rs = h.replaceState.bind(h);
+  h.pushState    = function (...a: Parameters<typeof h.pushState>)    { const r = ps(...a); fire(); return r; };
+  h.replaceState = function (...a: Parameters<typeof h.replaceState>) { const r = rs(...a); fire(); return r; };
+  window.addEventListener('popstate', fire);
+})(window.history);
+
+let navDebounce: ReturnType<typeof setTimeout>;
+function onNav(): void {
+  clearTimeout(navDebounce);
+  navDebounce = setTimeout(() => {
+    if (!location.pathname.includes('/-/search')) return;
+    waitForDom(init);
+  }, 250);
+}
+
+window.addEventListener('gcs-nav', onNav);
+document.addEventListener('turbo:load', onNav);
+document.addEventListener('turbo:render', onNav);
+
+// ── Boot ──────────────────────────────────────────────────────────────
+
+waitForDom(init);
