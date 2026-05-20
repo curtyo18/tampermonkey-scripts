@@ -105,8 +105,8 @@
     panel.id = "gcs-panel";
     panel.style.cssText = [
       "padding:10px 16px",
-      "background:var(--gl-background-color-subtle,#f5f5f5)",
-      "border-bottom:1px solid var(--gl-border-color-default,#ddd)",
+      "background:var(--gl-background-color-subtle)",
+      "border-bottom:1px solid var(--gl-border-color-default)",
       "display:flex",
       "gap:16px",
       "align-items:flex-end",
@@ -117,22 +117,22 @@
     ].join(";");
     const extWrap = makeFieldWrap("Extension");
     const tagRow = document.createElement("div");
-    tagRow.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:26px;padding:2px 4px;border:1px solid #ccc;border-radius:4px;background:#fff;";
+    tagRow.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:26px;padding:2px 4px;border:1px solid var(--gl-border-color-default);border-radius:4px;background:var(--gl-background-color-default);";
     const extInput = document.createElement("input");
     extInput.type = "text";
     extInput.placeholder = "js, ts\u2026";
-    extInput.style.cssText = "border:none;outline:none;width:70px;font:inherit;";
+    extInput.style.cssText = "border:none;outline:none;width:70px;font:inherit;color:var(--gl-text-color-primary);background:transparent;";
     function renderTags() {
       Array.from(tagRow.children).forEach((child) => {
         if (child !== extInput) tagRow.removeChild(child);
       });
       for (const ext of state.extensions) {
         const tag = document.createElement("span");
-        tag.style.cssText = "background:#e2e8f0;border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;";
+        tag.style.cssText = "background:var(--gl-background-color-strong);border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;";
         tag.appendChild(document.createTextNode(ext));
         const rm = document.createElement("button");
         rm.textContent = "\xD7";
-        rm.style.cssText = "border:none;background:none;cursor:pointer;padding:0;line-height:1;font-size:14px;color:#555;";
+        rm.style.cssText = "border:none;background:none;cursor:pointer;padding:0;line-height:1;font-size:14px;color:var(--gl-text-color-secondary);";
         rm.addEventListener("click", () => {
           state.extensions = state.extensions.filter((e) => e !== ext);
           renderTags();
@@ -178,18 +178,18 @@
     const modeWrap = makeFieldWrap("Mode");
     const modeBtn = document.createElement("button");
     modeBtn.textContent = "Fuzzy";
-    modeBtn.style.cssText = "border:1px solid #ccc;border-radius:4px;padding:3px 10px;cursor:pointer;background:#fff;font:inherit;";
+    modeBtn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);font:inherit;";
     modeBtn.addEventListener("click", () => {
       state.mode = state.mode === "fuzzy" ? "exact" : "fuzzy";
       modeBtn.textContent = state.mode === "fuzzy" ? "Fuzzy" : "Exact";
-      modeBtn.style.background = state.mode === "exact" ? "#1f75cb" : "#fff";
-      modeBtn.style.color = state.mode === "exact" ? "#fff" : "#333";
+      modeBtn.style.background = state.mode === "exact" ? "var(--gl-color-blue-500,#1f75cb)" : "var(--gl-background-color-default)";
+      modeBtn.style.color = state.mode === "exact" ? "#fff" : "var(--gl-text-color-primary)";
       onChange({ ...state });
     });
     modeWrap.appendChild(modeBtn);
     const clearBtn = document.createElement("button");
     clearBtn.textContent = "Clear filters";
-    clearBtn.style.cssText = "border:1px solid #ccc;border-radius:4px;padding:3px 10px;cursor:pointer;background:#fff;font:inherit;color:#555;";
+    clearBtn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:inherit;color:var(--gl-text-color-secondary);";
     clearBtn.addEventListener("click", () => {
       state.extensions = [];
       state.filename = "";
@@ -198,8 +198,8 @@
       fnInput.value = "";
       pathInput.value = "";
       modeBtn.textContent = "Fuzzy";
-      modeBtn.style.background = "#fff";
-      modeBtn.style.color = "#333";
+      modeBtn.style.background = "var(--gl-background-color-default)";
+      modeBtn.style.color = "var(--gl-text-color-primary)";
       renderTags();
       onChange({ ...state });
     });
@@ -214,7 +214,7 @@
     const wrap = document.createElement("div");
     wrap.id = "gcs-results";
     const status = document.createElement("div");
-    status.style.cssText = "padding:8px 16px;font:13px system-ui;color:#666;border-bottom:1px solid var(--gl-border-color-default,#eee);";
+    status.style.cssText = "padding:8px 16px;font:13px system-ui;color:var(--gl-text-color-secondary);border-bottom:1px solid var(--gl-border-color-default);";
     status.textContent = "Loading\u2026";
     const list = document.createElement("div");
     list.id = "gcs-list";
@@ -236,24 +236,24 @@
       },
       setError(msg) {
         status.textContent = msg;
-        status.style.color = "#c0392b";
+        status.style.color = "var(--gl-text-color-danger,#c0392b)";
       },
       clear() {
         list.innerHTML = "";
         status.textContent = "Loading\u2026";
-        status.style.color = "#666";
+        status.style.color = "var(--gl-text-color-secondary)";
       }
     };
   }
   function renderCard(result) {
     const card = document.createElement("div");
-    card.style.cssText = "padding:12px 16px;border-bottom:1px solid var(--gl-border-color-default,#eee);font:13px/1.5 system-ui,-apple-system,sans-serif;";
+    card.style.cssText = "padding:12px 16px;border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;";
     const header = document.createElement("div");
     header.style.marginBottom = "6px";
     const link = document.createElement("a");
     link.href = `${location.origin}/${result.path}`;
     link.textContent = result.path;
-    link.style.cssText = "color:var(--gl-text-color-link,#1068bf);text-decoration:none;font-weight:500;word-break:break-all;";
+    link.style.cssText = "color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;";
     link.addEventListener("mouseenter", () => {
       link.style.textDecoration = "underline";
     });
@@ -262,13 +262,13 @@
     });
     const ref = document.createElement("span");
     ref.textContent = ` \xB7 ${result.ref}`;
-    ref.style.color = "#888";
+    ref.style.color = "var(--gl-text-color-secondary)";
     header.appendChild(link);
     header.appendChild(ref);
     card.appendChild(header);
     if (result.data) {
       const pre = document.createElement("pre");
-      pre.style.cssText = 'margin:0;padding:8px 10px;background:var(--gl-background-color-subtle,#f8f9fa);border-radius:4px;overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
+      pre.style.cssText = 'margin:0;padding:8px 10px;background:var(--gl-background-color-subtle);border-radius:4px;overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
       const lineHint = result.startline ? `Line ${result.startline}: ` : "";
       pre.textContent = lineHint + result.data.slice(0, 800);
       card.appendChild(pre);
@@ -278,7 +278,7 @@
   function createExportToolbar(getAllResults) {
     const toolbar = document.createElement("div");
     toolbar.id = "gcs-toolbar";
-    toolbar.style.cssText = "padding:8px 16px;display:flex;gap:8px;border-top:1px solid var(--gl-border-color-default,#eee);background:var(--gl-background-color-subtle,#f9f9f9);";
+    toolbar.style.cssText = "padding:8px 16px;display:flex;gap:8px;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);";
     toolbar.appendChild(makeToolbarBtn("Export JSON", () => {
       triggerDownload(JSON.stringify(getAllResults(), null, 2), "application/json", "json");
     }));
@@ -309,7 +309,7 @@
     wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;";
     const lbl = document.createElement("label");
     lbl.textContent = label;
-    lbl.style.cssText = "font-size:11px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.4px;";
+    lbl.style.cssText = "font-size:11px;font-weight:600;color:var(--gl-text-color-secondary);text-transform:uppercase;letter-spacing:.4px;";
     wrap.appendChild(lbl);
     return wrap;
   }
@@ -317,7 +317,7 @@
     const inp = document.createElement("input");
     inp.type = "text";
     inp.placeholder = placeholder;
-    inp.style.cssText = "border:1px solid #ccc;border-radius:4px;padding:3px 6px;width:140px;font:inherit;";
+    inp.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 6px;width:140px;font:inherit;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);";
     return inp;
   }
   function debounce(fn, ms) {
@@ -330,7 +330,7 @@
   function makeToolbarBtn(label, onClick) {
     const btn = document.createElement("button");
     btn.textContent = label;
-    btn.style.cssText = "border:1px solid #ccc;border-radius:4px;padding:3px 10px;cursor:pointer;background:#fff;font:12px system-ui;color:#333;";
+    btn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:12px system-ui;color:var(--gl-text-color-primary);";
     btn.addEventListener("click", onClick);
     return btn;
   }
