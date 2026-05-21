@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLab Code Search+
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Augments GitLab search with filter UI, full pagination, and export
 // @match        *://*/-/search*
 // @include      /\/search\?/
@@ -20,12 +20,24 @@
     if (projectId !== null) return `/api/v4/projects/${projectId}/search`;
     return "/api/v4/search";
   }
-  function buildQuery(mainQuery, filters) {
-    const parts = [mainQuery.trim()];
-    if (filters.filename) parts.push(`filename:${filters.filename}`);
-    if (filters.path) parts.push(`path:${filters.path}`);
-    if (filters.extensions?.length === 1) parts.push(`extension:${filters.extensions[0]}`);
-    return parts.filter(Boolean).join(" ");
+  function parseExtensions(raw) {
+    return raw.split(/[,\s]+/).map((e) => e.trim().replace(/^\./, "").toLowerCase()).filter(Boolean);
+  }
+  function filterResults(results, textFilter, extensions) {
+    let out = results;
+    if (extensions.length > 0) {
+      out = out.filter((r) => {
+        const ext = r.filename.split(".").pop()?.toLowerCase() ?? "";
+        return extensions.includes(ext);
+      });
+    }
+    if (textFilter.trim()) {
+      const q = textFilter.toLowerCase();
+      out = out.filter(
+        (r) => r.path.toLowerCase().includes(q) || r.filename.toLowerCase().includes(q) || (r.data?.toLowerCase().includes(q) ?? false)
+      );
+    }
+    return out;
   }
   function extractRepoPaths(results) {
     const seen = /* @__PURE__ */ new Set();
@@ -118,179 +130,277 @@
   }
 
   // src/ui.ts
-  function createFilterPanel(onChange) {
-    const state = { extensions: [], filename: "", path: "", mode: "fuzzy" };
-    const panel = document.createElement("div");
-    panel.id = "gcs-panel";
-    panel.style.cssText = [
-      "padding:10px 16px",
-      "background:var(--gl-background-color-subtle)",
-      "border-bottom:1px solid var(--gl-border-color-default)",
-      "display:flex",
-      "gap:16px",
-      "align-items:flex-end",
-      "flex-wrap:wrap",
-      "font:13px/1.5 system-ui,-apple-system,sans-serif",
-      "box-sizing:border-box",
-      "width:100%"
-    ].join(";");
-    const extWrap = makeFieldWrap("Extension");
-    const tagRow = document.createElement("div");
-    tagRow.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:26px;padding:2px 4px;border:1px solid var(--gl-border-color-default);border-radius:4px;background:var(--gl-background-color-default);";
-    const extInput = document.createElement("input");
-    extInput.type = "text";
-    extInput.placeholder = "js, ts\u2026";
-    extInput.style.cssText = "border:none;outline:none;width:70px;font:inherit;color:var(--gl-text-color-primary);background:transparent;";
-    function renderTags() {
-      Array.from(tagRow.children).forEach((child) => {
-        if (child !== extInput) tagRow.removeChild(child);
-      });
-      for (const ext of state.extensions) {
-        const tag = document.createElement("span");
-        tag.style.cssText = "background:var(--gl-background-color-strong);border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;";
-        tag.appendChild(document.createTextNode(ext));
-        const rm = document.createElement("button");
-        rm.textContent = "\xD7";
-        rm.style.cssText = "border:none;background:none;cursor:pointer;padding:0;line-height:1;font-size:14px;color:var(--gl-text-color-secondary);";
-        rm.addEventListener("click", () => {
-          state.extensions = state.extensions.filter((e) => e !== ext);
-          renderTags();
-          onChange({ ...state });
-        });
-        tag.appendChild(rm);
-        tagRow.insertBefore(tag, extInput);
-      }
-    }
-    extInput.addEventListener("keydown", (e) => {
-      const val = extInput.value.trim().replace(/^\./, "");
-      if ((e.key === "Enter" || e.key === ",") && val) {
-        e.preventDefault();
-        if (!state.extensions.includes(val)) {
-          state.extensions = [...state.extensions, val];
-          extInput.value = "";
-          renderTags();
-          onChange({ ...state });
-        }
-      }
-      if (e.key === "Backspace" && !extInput.value && state.extensions.length) {
-        state.extensions = state.extensions.slice(0, -1);
-        renderTags();
-        onChange({ ...state });
-      }
-    });
-    renderTags();
-    extWrap.appendChild(tagRow);
-    const fnWrap = makeFieldWrap("Filename");
-    const fnInput = makeTextInput("*.test.*");
-    fnInput.addEventListener("input", debounce(() => {
-      state.filename = fnInput.value.trim();
-      onChange({ ...state });
-    }, 400));
-    fnWrap.appendChild(fnInput);
-    const pathWrap = makeFieldWrap("Path");
-    const pathInput = makeTextInput("src/components");
-    pathInput.addEventListener("input", debounce(() => {
-      state.path = pathInput.value.trim();
-      onChange({ ...state });
-    }, 400));
-    pathWrap.appendChild(pathInput);
-    const modeWrap = makeFieldWrap("Mode");
-    const modeBtn = document.createElement("button");
-    modeBtn.textContent = "Fuzzy";
-    modeBtn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);font:inherit;";
-    modeBtn.addEventListener("click", () => {
-      state.mode = state.mode === "fuzzy" ? "exact" : "fuzzy";
-      modeBtn.textContent = state.mode === "fuzzy" ? "Fuzzy" : "Exact";
-      modeBtn.style.background = state.mode === "exact" ? "var(--gl-color-blue-500,#1f75cb)" : "var(--gl-background-color-default)";
-      modeBtn.style.color = state.mode === "exact" ? "#fff" : "var(--gl-text-color-primary)";
-      onChange({ ...state });
-    });
-    modeWrap.appendChild(modeBtn);
-    const clearBtn = document.createElement("button");
-    clearBtn.textContent = "Clear filters";
-    clearBtn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:inherit;color:var(--gl-text-color-secondary);";
-    clearBtn.addEventListener("click", () => {
-      state.extensions = [];
-      state.filename = "";
-      state.path = "";
-      state.mode = "fuzzy";
-      fnInput.value = "";
-      pathInput.value = "";
-      modeBtn.textContent = "Fuzzy";
-      modeBtn.style.background = "var(--gl-background-color-default)";
-      modeBtn.style.color = "var(--gl-text-color-primary)";
-      renderTags();
-      onChange({ ...state });
-    });
-    panel.appendChild(extWrap);
-    panel.appendChild(fnWrap);
-    panel.appendChild(pathWrap);
-    panel.appendChild(modeWrap);
-    panel.appendChild(clearBtn);
-    return { panel, getState: () => ({ ...state }) };
+  var VAR = {
+    bg: "var(--gl-background-color-default, Canvas)",
+    bgSubtle: "var(--gl-background-color-subtle, Canvas)",
+    border: "var(--gl-border-color-default, ButtonBorder)",
+    text: "var(--gl-text-color-primary, CanvasText)",
+    textMuted: "var(--gl-text-color-secondary, GrayText)",
+    textLink: "var(--gl-text-color-link, LinkText)",
+    danger: "var(--gl-text-color-danger, #c0392b)",
+    blue: "var(--gl-color-blue-500, #1f75cb)"
+  };
+  var BASE_FONT = "font:13px/1.5 system-ui,-apple-system,sans-serif;box-sizing:border-box;";
+  function div(css) {
+    const el = document.createElement("div");
+    el.style.cssText = css;
+    return el;
   }
-  function createResultsContainer() {
-    const wrap = document.createElement("div");
-    wrap.id = "gcs-results";
-    const status = document.createElement("div");
-    status.style.cssText = "padding:8px 16px;font:13px system-ui;color:var(--gl-text-color-secondary);border-bottom:1px solid var(--gl-border-color-default);";
-    status.textContent = "Loading\u2026";
-    const list = document.createElement("div");
+  function mkInput(placeholder, flex) {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = placeholder;
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") e.stopPropagation();
+    });
+    inp.style.cssText = [
+      "padding:4px 8px",
+      `border:1px solid ${VAR.border}`,
+      "border-radius:4px",
+      BASE_FONT,
+      `background:${VAR.bg}`,
+      `color:${VAR.text}`,
+      "min-width:0",
+      flex ? "flex:1" : ""
+    ].filter(Boolean).join(";");
+    return inp;
+  }
+  function mkBtn(label, onClick, primary = false) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.style.cssText = [
+      "padding:4px 10px",
+      `border:1px solid ${primary ? VAR.blue : VAR.border}`,
+      "border-radius:4px",
+      "cursor:pointer",
+      BASE_FONT,
+      `background:${primary ? VAR.blue : VAR.bg}`,
+      `color:${primary ? "#fff" : VAR.text}`,
+      "white-space:nowrap",
+      "flex-shrink:0"
+    ].join(";");
+    btn.addEventListener("click", () => void onClick());
+    return btn;
+  }
+  function mkLabel(text) {
+    const s = document.createElement("span");
+    s.textContent = text;
+    s.style.cssText = `font-size:11px;font-weight:600;color:${VAR.textMuted};white-space:nowrap;flex-shrink:0;`;
+    return s;
+  }
+  function debounce(fn, ms) {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
+  }
+  function createPanel(initialQuery, onFetch) {
+    let allResults = [];
+    let hasFetched = false;
+    const root = div([
+      BASE_FONT,
+      `border:1px solid ${VAR.border}`,
+      "border-radius:6px",
+      "overflow:hidden",
+      `background:${VAR.bg}`,
+      `color:${VAR.text}`,
+      "margin-bottom:16px"
+    ].join(";"));
+    root.id = "gcs-panel";
+    const titleBar = div([
+      "padding:8px 14px",
+      "display:flex",
+      "justify-content:space-between",
+      "align-items:center",
+      `background:${VAR.bgSubtle}`,
+      `border-bottom:1px solid ${VAR.border}`
+    ].join(";"));
+    const titleEl = document.createElement("strong");
+    titleEl.textContent = "Enhanced Code Search";
+    titleEl.style.cssText = "font-size:14px;";
+    const closeBtn = mkBtn("\u2715 Close", () => {
+    });
+    titleBar.append(titleEl, closeBtn);
+    const fetchBar = div([
+      "padding:10px 14px",
+      "display:flex",
+      "gap:8px",
+      "align-items:center",
+      `border-bottom:1px solid ${VAR.border}`
+    ].join(";"));
+    const queryInput = mkInput("Search query \u2014 supports extension:js  filename:*.ts  path:src", true);
+    queryInput.value = initialQuery;
+    const fetchBtn = mkBtn("Fetch All", () => {
+      const q = queryInput.value.trim();
+      if (q) onFetch(q);
+    }, true);
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        fetchBtn.click();
+      }
+    });
+    fetchBar.append(queryInput, fetchBtn);
+    const filterBar = div([
+      "padding:8px 14px",
+      "display:flex",
+      "gap:8px",
+      "align-items:center",
+      "flex-wrap:wrap",
+      `border-bottom:1px solid ${VAR.border}`
+    ].join(";"));
+    const filterInput = mkInput("Filter loaded results\u2026", true);
+    const extInput = mkInput("Extensions: js, ts, py\u2026");
+    extInput.style.width = "150px";
+    const hint = document.createElement("span");
+    hint.textContent = `\u2139 Searches paths and code snippets literally after loading \u2014 finds "hello-world" even if GitLab's tokenised index split it at the hyphen`;
+    hint.style.cssText = `font-size:11px;color:${VAR.textMuted};flex-basis:100%;margin-top:2px;`;
+    filterInput.addEventListener("input", debounce(refilter, 200));
+    extInput.addEventListener("input", debounce(refilter, 200));
+    filterBar.append(mkLabel("Filter:"), filterInput, mkLabel("Ext:"), extInput, hint);
+    const statusRow = div([
+      "padding:6px 14px",
+      "display:flex",
+      "align-items:center",
+      "justify-content:space-between",
+      "gap:8px",
+      "flex-wrap:wrap",
+      `border-bottom:1px solid ${VAR.border}`,
+      "font-size:12px"
+    ].join(";"));
+    const countSpan = document.createElement("span");
+    countSpan.style.color = VAR.textMuted;
+    countSpan.textContent = "Enter a query above and click Fetch All.";
+    const toolRow = div("display:flex;gap:6px;flex-wrap:wrap;");
+    const copyBtn = mkBtn("Copy repos", async () => {
+      const repos = extractRepoPaths(getVisible()).join("\n");
+      try {
+        await navigator.clipboard.writeText(repos);
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => {
+          copyBtn.textContent = orig;
+        }, 1500);
+      } catch {
+        copyBtn.textContent = "Copy failed";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy repos";
+        }, 2e3);
+      }
+    });
+    const divEl = div(`width:1px;background:${VAR.border};margin:2px 0;flex-shrink:0;`);
+    toolRow.append(
+      mkBtn("Expand all", () => {
+        list.querySelectorAll(".gcs-snippet").forEach((el) => {
+          el.style.display = "block";
+        });
+        list.querySelectorAll(".gcs-chevron").forEach((el) => {
+          el.style.transform = "rotate(90deg)";
+        });
+      }),
+      mkBtn("Collapse all", () => {
+        list.querySelectorAll(".gcs-snippet").forEach((el) => {
+          el.style.display = "none";
+        });
+        list.querySelectorAll(".gcs-chevron").forEach((el) => {
+          el.style.transform = "";
+        });
+      }),
+      divEl,
+      mkBtn("Export JSON", () => {
+        triggerDownload(JSON.stringify(getVisible(), null, 2), "application/json", "json", queryInput.value);
+      }),
+      mkBtn("Export CSV", () => {
+        triggerDownload(toCsv(getVisible()), "text/csv", "csv", queryInput.value);
+      }),
+      copyBtn
+    );
+    statusRow.append(countSpan, toolRow);
+    const list = div("");
     list.id = "gcs-list";
-    wrap.appendChild(status);
-    wrap.appendChild(list);
+    root.append(titleBar, fetchBar, filterBar, statusRow, list);
+    function getVisible() {
+      return filterResults(allResults, filterInput.value, parseExtensions(extInput.value));
+    }
+    function renderList(results) {
+      list.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      for (const r of results) frag.appendChild(renderCard(r));
+      list.appendChild(frag);
+    }
+    function updateCount() {
+      const visible = getVisible();
+      if (!hasFetched) {
+        countSpan.textContent = "Enter a query above and click Fetch All.";
+      } else if (allResults.length === 0) {
+        countSpan.textContent = "No results found.";
+      } else if (visible.length === allResults.length) {
+        countSpan.textContent = `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? "s" : ""}`;
+      } else {
+        countSpan.textContent = `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (filtered)`;
+      }
+      countSpan.style.color = VAR.textMuted;
+    }
+    function refilter() {
+      if (!hasFetched) return;
+      renderList(getVisible());
+      updateCount();
+    }
     return {
-      el: wrap,
-      setStatus(loaded, total) {
-        if (total === 0) {
-          status.textContent = "No results";
-        } else if (loaded >= total) {
-          status.textContent = `${total.toLocaleString()} result${total !== 1 ? "s" : ""}`;
-        } else {
-          status.textContent = `Loading\u2026 ${loaded.toLocaleString()} / ~${total.toLocaleString()}`;
-        }
+      el: root,
+      closeBtn,
+      setFetchProgress(loaded, total) {
+        countSpan.textContent = `Loading\u2026 ${loaded.toLocaleString()} / ~${total.toLocaleString()} results`;
+        countSpan.style.color = VAR.textMuted;
       },
-      appendResults(results) {
-        for (const r of results) list.appendChild(renderCard(r));
+      setResults(results) {
+        hasFetched = true;
+        allResults = results;
+        renderList(getVisible());
+        updateCount();
       },
       setError(msg) {
-        status.textContent = msg;
-        status.style.color = "var(--gl-text-color-danger,#c0392b)";
+        countSpan.textContent = msg;
+        countSpan.style.color = VAR.danger;
+        list.innerHTML = "";
       },
       clear() {
+        hasFetched = false;
+        allResults = [];
         list.innerHTML = "";
-        status.textContent = "Loading\u2026";
-        status.style.color = "var(--gl-text-color-secondary)";
+        updateCount();
       }
     };
   }
   function renderCard(result) {
-    const card = document.createElement("div");
+    const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
     card.className = "gcs-card";
-    card.style.cssText = "border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;";
-    const header = document.createElement("div");
-    header.style.cssText = "display:flex;align-items:baseline;gap:6px;padding:8px 16px;cursor:pointer;user-select:none;";
+    const header = div([
+      "display:flex",
+      "align-items:baseline",
+      "gap:6px",
+      "padding:8px 14px",
+      "cursor:pointer",
+      "user-select:none"
+    ].join(";"));
     const chevron = document.createElement("span");
     chevron.className = "gcs-chevron";
     chevron.textContent = "\u25B6";
-    chevron.style.cssText = "font-size:9px;color:var(--gl-text-color-secondary);flex-shrink:0;transition:transform .1s;";
-    const meta = document.createElement("div");
-    meta.style.cssText = "flex:1;min-width:0;";
+    chevron.style.cssText = `font-size:9px;color:${VAR.textMuted};flex-shrink:0;transition:transform .12s;`;
+    const meta = div("flex:1;min-width:0;");
     if (result.project_path) {
-      const repoLabel = document.createElement("span");
-      repoLabel.textContent = result.project_path + " \xB7 ";
-      repoLabel.style.cssText = "font-size:11px;color:var(--gl-text-color-secondary);";
-      meta.appendChild(repoLabel);
+      const repo = document.createElement("span");
+      repo.textContent = result.project_path + " \xB7 ";
+      repo.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
+      meta.appendChild(repo);
     }
     const link = document.createElement("a");
-    if (result.project_path) {
-      link.href = `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`;
-      link.textContent = result.path;
-    } else {
-      link.href = `${location.origin}/${result.path}`;
-      link.textContent = result.path;
-    }
-    link.style.cssText = "color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;";
+    link.href = result.project_path ? `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}` : `${location.origin}/${result.path}`;
+    link.textContent = result.path;
+    link.style.cssText = `color:${VAR.textLink};text-decoration:none;font-weight:500;word-break:break-all;`;
     link.addEventListener("mouseenter", () => {
       link.style.textDecoration = "underline";
     });
@@ -301,14 +411,23 @@
     meta.appendChild(link);
     const ref = document.createElement("span");
     ref.textContent = ` \xB7 ${result.ref}`;
-    ref.style.cssText = "font-size:11px;color:var(--gl-text-color-secondary);";
+    ref.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
     meta.appendChild(ref);
-    header.appendChild(chevron);
-    header.appendChild(meta);
+    header.append(chevron, meta);
     card.appendChild(header);
     const snippet = document.createElement("pre");
     snippet.className = "gcs-snippet";
-    snippet.style.cssText = 'display:none;margin:0;padding:8px 16px 10px 32px;background:var(--gl-background-color-subtle);overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
+    snippet.style.cssText = [
+      "display:none",
+      "margin:0",
+      "padding:8px 14px 10px 30px",
+      `background:${VAR.bgSubtle}`,
+      "overflow:auto",
+      'font:12px/1.4 "SFMono-Regular",Consolas,monospace',
+      "white-space:pre-wrap",
+      "word-break:break-all",
+      "max-height:200px"
+    ].join(";");
     if (result.data) {
       const lineHint = result.startline ? `Line ${result.startline}: ` : "";
       snippet.textContent = lineHint + result.data.slice(0, 800);
@@ -321,89 +440,8 @@
     });
     return card;
   }
-  function createExportToolbar(getAllResults) {
-    const toolbar = document.createElement("div");
-    toolbar.id = "gcs-toolbar";
-    toolbar.style.cssText = "padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);";
-    toolbar.appendChild(makeToolbarBtn("Expand all", () => {
-      document.querySelectorAll("#gcs-list .gcs-snippet").forEach((el) => {
-        el.style.display = "block";
-      });
-      document.querySelectorAll("#gcs-list .gcs-chevron").forEach((el) => {
-        el.style.transform = "rotate(90deg)";
-      });
-    }));
-    toolbar.appendChild(makeToolbarBtn("Collapse all", () => {
-      document.querySelectorAll("#gcs-list .gcs-snippet").forEach((el) => {
-        el.style.display = "none";
-      });
-      document.querySelectorAll("#gcs-list .gcs-chevron").forEach((el) => {
-        el.style.transform = "";
-      });
-    }));
-    const divider = document.createElement("span");
-    divider.style.cssText = "width:1px;background:var(--gl-border-color-default);margin:2px 0;";
-    toolbar.appendChild(divider);
-    toolbar.appendChild(makeToolbarBtn("Export JSON", () => {
-      triggerDownload(JSON.stringify(getAllResults(), null, 2), "application/json", "json");
-    }));
-    toolbar.appendChild(makeToolbarBtn("Export CSV", () => {
-      triggerDownload(toCsv(getAllResults()), "text/csv", "csv");
-    }));
-    const copyBtn = makeToolbarBtn("Copy repos", async () => {
-      const repos = extractRepoPaths(getAllResults()).join("\n");
-      try {
-        await navigator.clipboard.writeText(repos);
-        const orig = copyBtn.textContent ?? "";
-        copyBtn.textContent = "Copied!";
-        setTimeout(() => {
-          copyBtn.textContent = orig;
-        }, 1500);
-      } catch {
-        copyBtn.textContent = "Copy failed";
-        setTimeout(() => {
-          copyBtn.textContent = "Copy repos";
-        }, 2e3);
-      }
-    });
-    toolbar.appendChild(copyBtn);
-    return toolbar;
-  }
-  function makeFieldWrap(label) {
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;";
-    const lbl = document.createElement("label");
-    lbl.textContent = label;
-    lbl.style.cssText = "font-size:11px;font-weight:600;color:var(--gl-text-color-secondary);text-transform:uppercase;letter-spacing:.4px;";
-    wrap.appendChild(lbl);
-    return wrap;
-  }
-  function makeTextInput(placeholder) {
-    const inp = document.createElement("input");
-    inp.type = "text";
-    inp.placeholder = placeholder;
-    inp.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 6px;width:140px;font:inherit;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);";
-    return inp;
-  }
-  function debounce(fn, ms) {
-    let t;
-    return (...args) => {
-      clearTimeout(t);
-      t = setTimeout(() => fn(...args), ms);
-    };
-  }
-  function makeToolbarBtn(label, onClick) {
-    const btn = document.createElement("button");
-    btn.textContent = label;
-    btn.style.cssText = "border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:12px system-ui;color:var(--gl-text-color-primary);";
-    btn.addEventListener("click", onClick);
-    return btn;
-  }
-  function triggerDownload(content, mimeType, ext) {
-    const raw = document.querySelector(
-      'input[data-testid="search-page-input"], input[name="search"]'
-    )?.value ?? "results";
-    const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+  function triggerDownload(content, mimeType, ext, query) {
+    const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
     const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
     const blob = new Blob([content], { type: mimeType });
     const a = document.createElement("a");
@@ -431,28 +469,36 @@
       el.style.display = "none";
     });
   }
+  function showNativeResults() {
+    document.querySelectorAll(
+      ".results-list, .search-results-list, .search-results ul"
+    ).forEach((el) => {
+      el.style.display = "";
+    });
+  }
   function findInjectionPoint() {
     return document.querySelector(".results-list")?.parentElement ?? document.querySelector(".search-results-list")?.parentElement ?? document.querySelector("main");
   }
-  async function runSearch(container, filterState, session) {
-    const query = buildQuery(getNativeQuery(), filterState);
-    if (!query) return;
+  function isSearchPage() {
+    const p = location.pathname;
+    return p.endsWith("/search") || p.includes("/-/search");
+  }
+  async function runSearch(panel, query) {
     const endpoint = resolveApiEndpoint(location.pathname, getProjectId());
-    session.results = [];
-    container.clear();
+    panel.clear();
     function handleError(err) {
       if (err.status === 401 || err.status === 403) {
-        container.setError("Not authorised \u2014 are you logged in?");
+        panel.setError("Not authorised \u2014 are you logged in?");
       } else if (err.status === 404) {
-        container.setError("Search endpoint not found \u2014 is Advanced Search enabled on this instance?");
+        panel.setError("Search endpoint not found \u2014 is Advanced Search enabled on this instance?");
       } else {
-        container.setError(`Search failed: ${err.message}`);
+        panel.setError(`Search failed: ${err.message}`);
       }
     }
     try {
       const rawResults = await fetchAllPages(endpoint, query, {
         onBatch(_, loaded, total) {
-          container.setStatus(loaded, total);
+          panel.setFetchProgress(loaded, total);
         },
         onError: handleError
       });
@@ -464,41 +510,55 @@
         ...r,
         project_path: r.project_id != null ? projectPaths.get(r.project_id) ?? void 0 : void 0
       }));
-      const filtered = filterState.extensions.length > 1 ? enriched.filter((r) => {
-        const ext = r.filename.split(".").pop()?.toLowerCase() ?? "";
-        return filterState.extensions.some((e) => e.toLowerCase() === ext);
-      }) : enriched;
-      session.results = filtered;
-      container.appendResults(filtered);
-      container.setStatus(filtered.length, filtered.length);
-      if (filtered.length === 0) container.setStatus(0, 0);
+      panel.setResults(enriched);
     } catch (err) {
       handleError(err);
     }
   }
-  function cleanup() {
-    document.getElementById("gcs-panel")?.remove();
-    document.getElementById("gcs-results")?.remove();
-    document.getElementById("gcs-toolbar")?.remove();
+  var activePanel = null;
+  function injectTrigger() {
+    if (document.getElementById("gcs-trigger")) return;
+    const btn = document.createElement("button");
+    btn.id = "gcs-trigger";
+    btn.type = "button";
+    btn.textContent = "\u26A1 Enhanced Search";
+    btn.style.cssText = [
+      "display:block",
+      "margin:0 0 12px",
+      "padding:6px 14px",
+      "border:1px solid var(--gl-border-color-default, ButtonBorder)",
+      "border-radius:6px",
+      "background:var(--gl-background-color-default, Canvas)",
+      "color:var(--gl-text-color-primary, CanvasText)",
+      "font:13px/1.5 system-ui,-apple-system,sans-serif",
+      "cursor:pointer"
+    ].join(";");
+    btn.addEventListener("click", activate);
+    const point = findInjectionPoint();
+    if (point) point.insertBefore(btn, point.firstChild);
   }
-  function init() {
-    cleanup();
-    const injectionPoint = findInjectionPoint();
-    if (!injectionPoint) {
-      console.warn("[gcs] Could not find injection point \u2014 DOM selectors may need updating for this GitLab version");
-      return;
-    }
+  function activate() {
+    document.getElementById("gcs-trigger")?.remove();
     hideNativeResults();
-    const session = { results: [] };
-    const container = createResultsContainer();
-    const toolbar = createExportToolbar(() => session.results);
-    const { panel } = createFilterPanel((state) => {
-      void runSearch(container, state, session);
+    const panel = createPanel(getNativeQuery(), (query) => {
+      void runSearch(panel, query);
     });
-    injectionPoint.insertBefore(panel, injectionPoint.firstChild);
-    panel.insertAdjacentElement("afterend", container.el);
-    container.el.insertAdjacentElement("afterend", toolbar);
-    void runSearch(container, { extensions: [], filename: "", path: "", mode: "fuzzy" }, session);
+    panel.closeBtn.addEventListener("click", deactivate);
+    const point = findInjectionPoint();
+    if (point) point.insertBefore(panel.el, point.firstChild);
+    activePanel = panel;
+  }
+  function deactivate() {
+    activePanel?.el.remove();
+    activePanel = null;
+    showNativeResults();
+    injectTrigger();
+  }
+  function resetPage() {
+    activePanel?.el.remove();
+    activePanel = null;
+    document.getElementById("gcs-trigger")?.remove();
+    showNativeResults();
   }
   function waitForDom(callback) {
     const selectors = [".results-list", ".search-results-list", "main"];
@@ -519,7 +579,7 @@
       callback();
     }, 3e3);
   }
-  (function(h) {
+  (function patchHistory(h) {
     const fire = () => {
       window.dispatchEvent(new Event("gcs-nav"));
     };
@@ -538,19 +598,16 @@
     window.addEventListener("popstate", fire);
   })(window.history);
   var navDebounce;
-  function isSearchPage() {
-    const p = location.pathname;
-    return p.endsWith("/search") || p.includes("/-/search");
-  }
   function onNav() {
     clearTimeout(navDebounce);
     navDebounce = setTimeout(() => {
       if (!isSearchPage()) return;
-      waitForDom(init);
+      resetPage();
+      waitForDom(injectTrigger);
     }, 250);
   }
   window.addEventListener("gcs-nav", onNav);
   document.addEventListener("turbo:load", onNav);
   document.addEventListener("turbo:render", onNav);
-  waitForDom(init);
+  waitForDom(injectTrigger);
 })();

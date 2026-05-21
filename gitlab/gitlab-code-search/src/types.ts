@@ -1,10 +1,3 @@
-export interface FilterState {
-  extensions: string[];
-  filename: string;
-  path: string;
-  mode: 'fuzzy' | 'exact';
-}
-
 export interface SearchResult {
   project_id: number | null;
   path: string;
@@ -29,17 +22,4 @@ export interface FetchCallbacks {
 
 export interface ApiError extends Error {
   status?: number;
-}
-
-export interface ResultsContainer {
-  el: HTMLDivElement;
-  setStatus(loaded: number, total: number): void;
-  appendResults(results: SearchResult[]): void;
-  setError(msg: string): void;
-  clear(): void;
-}
-
-export interface FilterPanel {
-  panel: HTMLDivElement;
-  getState(): FilterState;
 }

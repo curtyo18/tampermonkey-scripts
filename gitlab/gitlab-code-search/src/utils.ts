@@ -1,4 +1,4 @@
-import type { FilterState, SearchResult } from './types.js';
+import type { SearchResult } from './types.js';
 
 export function resolveApiEndpoint(pathname: string, projectId: number | null): string {
   if (/^\/-\/search/.test(pathname)) return '/api/v4/search';
@@ -12,17 +12,44 @@ export function resolveApiEndpoint(pathname: string, projectId: number | null): 
   return '/api/v4/search';
 }
 
-export function buildQuery(mainQuery: string, filters: Partial<FilterState>): string {
-  // GitLab's filter syntax (filename:X, path:X) does not support quoting,
-  // so filter values with spaces will behave unexpectedly — UI controls should prevent this.
-  // Multiple extensions cannot be sent server-side: GitLab applies AND logic between them,
-  // returning zero results. For a single extension, server-side filtering is strictly better
-  // because it avoids wasting the API result cap on non-matching file types.
-  const parts: string[] = [mainQuery.trim()];
-  if (filters.filename) parts.push(`filename:${filters.filename}`);
-  if (filters.path) parts.push(`path:${filters.path}`);
-  if (filters.extensions?.length === 1) parts.push(`extension:${filters.extensions[0]}`);
-  return parts.filter(Boolean).join(' ');
+/** Parse a comma/space-separated extension string into normalised extension tokens. */
+export function parseExtensions(raw: string): string[] {
+  return raw
+    .split(/[,\s]+/)
+    .map(e => e.trim().replace(/^\./, '').toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Client-side filter applied to already-fetched results.
+ * Extension match is exact suffix; text match is a case-insensitive literal
+ * substring across path, filename, and code snippet — finds "hello-world"
+ * even when GitLab's tokeniser split it at the hyphen.
+ */
+export function filterResults(
+  results: SearchResult[],
+  textFilter: string,
+  extensions: string[],
+): SearchResult[] {
+  let out = results;
+
+  if (extensions.length > 0) {
+    out = out.filter(r => {
+      const ext = r.filename.split('.').pop()?.toLowerCase() ?? '';
+      return extensions.includes(ext);
+    });
+  }
+
+  if (textFilter.trim()) {
+    const q = textFilter.toLowerCase();
+    out = out.filter(r =>
+      r.path.toLowerCase().includes(q) ||
+      r.filename.toLowerCase().includes(q) ||
+      (r.data?.toLowerCase().includes(q) ?? false),
+    );
+  }
+
+  return out;
 }
 
 export function extractRepoPaths(results: SearchResult[]): string[] {

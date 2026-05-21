@@ -1,232 +1,351 @@
-import { toCsv, extractRepoPaths } from './utils.js';
-import type { FilterState, SearchResult, ResultsContainer, FilterPanel } from './types.js';
+import { filterResults, parseExtensions, extractRepoPaths, toCsv } from './utils.js';
+import type { SearchResult } from './types.js';
 
-export function createFilterPanel(onChange: (state: FilterState) => void): FilterPanel {
-  const state: FilterState = { extensions: [], filename: '', path: '', mode: 'fuzzy' };
+// ── CSS helpers ──────────────────────────────────────────────────────────────
+// System colour keywords (Canvas/CanvasText/ButtonBorder/GrayText) adapt to
+// OS dark-mode automatically and work on every browser without any variables.
+// GitLab CSS custom properties are applied as enhancements where they exist.
 
-  const panel = document.createElement('div');
-  panel.id = 'gcs-panel';
-  panel.style.cssText = [
-    'padding:10px 16px',
-    'background:var(--gl-background-color-subtle)',
-    'border-bottom:1px solid var(--gl-border-color-default)',
-    'display:flex',
-    'gap:16px',
-    'align-items:flex-end',
-    'flex-wrap:wrap',
-    'font:13px/1.5 system-ui,-apple-system,sans-serif',
-    'box-sizing:border-box',
-    'width:100%',
-  ].join(';');
+const VAR = {
+  bg:        'var(--gl-background-color-default, Canvas)',
+  bgSubtle:  'var(--gl-background-color-subtle, Canvas)',
+  border:    'var(--gl-border-color-default, ButtonBorder)',
+  text:      'var(--gl-text-color-primary, CanvasText)',
+  textMuted: 'var(--gl-text-color-secondary, GrayText)',
+  textLink:  'var(--gl-text-color-link, LinkText)',
+  danger:    'var(--gl-text-color-danger, #c0392b)',
+  blue:      'var(--gl-color-blue-500, #1f75cb)',
+};
 
-  // ── Extension multi-tag ──────────────────────────────────────────────
-  const extWrap = makeFieldWrap('Extension');
-  const tagRow = document.createElement('div');
-  tagRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:26px;padding:2px 4px;border:1px solid var(--gl-border-color-default);border-radius:4px;background:var(--gl-background-color-default);';
+const BASE_FONT = 'font:13px/1.5 system-ui,-apple-system,sans-serif;box-sizing:border-box;';
 
-  const extInput = document.createElement('input');
-  extInput.type = 'text';
-  extInput.placeholder = 'js, ts…';
-  extInput.style.cssText = 'border:none;outline:none;width:70px;font:inherit;color:var(--gl-text-color-primary);background:transparent;';
-
-  function renderTags(): void {
-    // Remove tag spans only; leave extInput in place to preserve focus and input state
-    Array.from(tagRow.children).forEach(child => {
-      if (child !== extInput) tagRow.removeChild(child);
-    });
-    for (const ext of state.extensions) {
-      const tag = document.createElement('span');
-      tag.style.cssText = 'background:var(--gl-background-color-strong);border-radius:3px;padding:1px 4px;display:flex;align-items:center;gap:3px;font-size:12px;';
-      tag.appendChild(document.createTextNode(ext));
-      const rm = document.createElement('button');
-      rm.textContent = '×';
-      rm.style.cssText = 'border:none;background:none;cursor:pointer;padding:0;line-height:1;font-size:14px;color:var(--gl-text-color-secondary);';
-      rm.addEventListener('click', () => {
-        state.extensions = state.extensions.filter(e => e !== ext);
-        renderTags();
-        onChange({ ...state });
-      });
-      tag.appendChild(rm);
-      tagRow.insertBefore(tag, extInput);
-    }
-  }
-
-  extInput.addEventListener('keydown', (e: KeyboardEvent) => {
-    const val = extInput.value.trim().replace(/^\./, '');
-    if ((e.key === 'Enter' || e.key === ',') && val) {
-      e.preventDefault();
-      if (!state.extensions.includes(val)) {
-        state.extensions = [...state.extensions, val];
-        extInput.value = '';
-        renderTags();
-        onChange({ ...state });
-      }
-    }
-    if (e.key === 'Backspace' && !extInput.value && state.extensions.length) {
-      state.extensions = state.extensions.slice(0, -1);
-      renderTags();
-      onChange({ ...state });
-    }
-  });
-
-  renderTags();
-  extWrap.appendChild(tagRow);
-
-  // ── Filename ─────────────────────────────────────────────────────────
-  const fnWrap = makeFieldWrap('Filename');
-  const fnInput = makeTextInput('*.test.*');
-  fnInput.addEventListener('input', debounce(() => {
-    state.filename = fnInput.value.trim();
-    onChange({ ...state });
-  }, 400));
-  fnWrap.appendChild(fnInput);
-
-  // ── Path ─────────────────────────────────────────────────────────────
-  const pathWrap = makeFieldWrap('Path');
-  const pathInput = makeTextInput('src/components');
-  pathInput.addEventListener('input', debounce(() => {
-    state.path = pathInput.value.trim();
-    onChange({ ...state });
-  }, 400));
-  pathWrap.appendChild(pathInput);
-
-  // ── Search mode toggle ───────────────────────────────────────────────
-  const modeWrap = makeFieldWrap('Mode');
-  const modeBtn = document.createElement('button');
-  modeBtn.textContent = 'Fuzzy';
-  modeBtn.style.cssText = 'border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);font:inherit;';
-  modeBtn.addEventListener('click', () => {
-    state.mode = state.mode === 'fuzzy' ? 'exact' : 'fuzzy';
-    modeBtn.textContent = state.mode === 'fuzzy' ? 'Fuzzy' : 'Exact';
-    modeBtn.style.background = state.mode === 'exact' ? 'var(--gl-color-blue-500,#1f75cb)' : 'var(--gl-background-color-default)';
-    modeBtn.style.color = state.mode === 'exact' ? '#fff' : 'var(--gl-text-color-primary)';
-    onChange({ ...state });
-  });
-  modeWrap.appendChild(modeBtn);
-
-  // ── Clear all ────────────────────────────────────────────────────────
-  const clearBtn = document.createElement('button');
-  clearBtn.textContent = 'Clear filters';
-  clearBtn.style.cssText = 'border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:inherit;color:var(--gl-text-color-secondary);';
-  clearBtn.addEventListener('click', () => {
-    state.extensions = [];
-    state.filename = '';
-    state.path = '';
-    state.mode = 'fuzzy';
-    fnInput.value = '';
-    pathInput.value = '';
-    modeBtn.textContent = 'Fuzzy';
-    modeBtn.style.background = 'var(--gl-background-color-default)';
-    modeBtn.style.color = 'var(--gl-text-color-primary)';
-    renderTags();
-    onChange({ ...state });
-  });
-
-  panel.appendChild(extWrap);
-  panel.appendChild(fnWrap);
-  panel.appendChild(pathWrap);
-  panel.appendChild(modeWrap);
-  panel.appendChild(clearBtn);
-
-  return { panel, getState: () => ({ ...state }) };
+function div(css: string): HTMLDivElement {
+  const el = document.createElement('div');
+  el.style.cssText = css;
+  return el;
 }
 
-export function createResultsContainer(): ResultsContainer {
-  const wrap = document.createElement('div') as HTMLDivElement;
-  wrap.id = 'gcs-results';
+function mkInput(placeholder: string, flex?: boolean): HTMLInputElement {
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.placeholder = placeholder;
+  // stopPropagation prevents a parent GitLab <form> from capturing Enter
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') e.stopPropagation(); });
+  inp.style.cssText = [
+    'padding:4px 8px',
+    `border:1px solid ${VAR.border}`,
+    'border-radius:4px',
+    BASE_FONT,
+    `background:${VAR.bg}`,
+    `color:${VAR.text}`,
+    'min-width:0',
+    flex ? 'flex:1' : '',
+  ].filter(Boolean).join(';');
+  return inp;
+}
 
-  const status = document.createElement('div');
-  status.style.cssText = 'padding:8px 16px;font:13px system-ui;color:var(--gl-text-color-secondary);border-bottom:1px solid var(--gl-border-color-default);';
-  status.textContent = 'Loading…';
+function mkBtn(label: string, onClick: (() => void) | (() => Promise<void>), primary = false): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button'; // prevent implicit form submission
+  btn.textContent = label;
+  btn.style.cssText = [
+    'padding:4px 10px',
+    `border:1px solid ${primary ? VAR.blue : VAR.border}`,
+    'border-radius:4px',
+    'cursor:pointer',
+    BASE_FONT,
+    `background:${primary ? VAR.blue : VAR.bg}`,
+    `color:${primary ? '#fff' : VAR.text}`,
+    'white-space:nowrap',
+    'flex-shrink:0',
+  ].join(';');
+  btn.addEventListener('click', () => void onClick());
+  return btn;
+}
 
-  const list = document.createElement('div');
+function mkLabel(text: string): HTMLSpanElement {
+  const s = document.createElement('span');
+  s.textContent = text;
+  s.style.cssText = `font-size:11px;font-weight:600;color:${VAR.textMuted};white-space:nowrap;flex-shrink:0;`;
+  return s;
+}
+
+function debounce<T extends unknown[]>(fn: (...args: T) => void, ms: number): (...args: T) => void {
+  let t: ReturnType<typeof setTimeout>;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ── Public surface ────────────────────────────────────────────────────────────
+
+export interface PanelHandle {
+  el: HTMLDivElement;
+  closeBtn: HTMLButtonElement;
+  /** Show per-batch progress during a fetch */
+  setFetchProgress(loaded: number, total: number): void;
+  /** Called once all pages + project-path enrichment are done */
+  setResults(results: SearchResult[]): void;
+  /** Show an inline error */
+  setError(msg: string): void;
+  /** Reset to empty-state for a new fetch */
+  clear(): void;
+}
+
+export function createPanel(initialQuery: string, onFetch: (query: string) => void): PanelHandle {
+  let allResults: SearchResult[] = [];
+  let hasFetched = false;
+
+  // ── Root ──────────────────────────────────────────────────────────────────
+  const root = div([
+    BASE_FONT,
+    `border:1px solid ${VAR.border}`,
+    'border-radius:6px',
+    'overflow:hidden',
+    `background:${VAR.bg}`,
+    `color:${VAR.text}`,
+    'margin-bottom:16px',
+  ].join(';')) as HTMLDivElement;
+  root.id = 'gcs-panel';
+
+  // ── Title bar ─────────────────────────────────────────────────────────────
+  const titleBar = div([
+    'padding:8px 14px',
+    'display:flex',
+    'justify-content:space-between',
+    'align-items:center',
+    `background:${VAR.bgSubtle}`,
+    `border-bottom:1px solid ${VAR.border}`,
+  ].join(';'));
+  const titleEl = document.createElement('strong');
+  titleEl.textContent = 'Enhanced Code Search';
+  titleEl.style.cssText = 'font-size:14px;';
+  const closeBtn = mkBtn('✕ Close', () => {});
+  titleBar.append(titleEl, closeBtn);
+
+  // ── Fetch bar ─────────────────────────────────────────────────────────────
+  const fetchBar = div([
+    'padding:10px 14px',
+    'display:flex',
+    'gap:8px',
+    'align-items:center',
+    `border-bottom:1px solid ${VAR.border}`,
+  ].join(';'));
+  const queryInput = mkInput('Search query — supports extension:js  filename:*.ts  path:src', true);
+  queryInput.value = initialQuery;
+  const fetchBtn = mkBtn('Fetch All', () => {
+    const q = queryInput.value.trim();
+    if (q) onFetch(q);
+  }, true);
+  queryInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); fetchBtn.click(); }
+  });
+  fetchBar.append(queryInput, fetchBtn);
+
+  // ── Filter bar ────────────────────────────────────────────────────────────
+  const filterBar = div([
+    'padding:8px 14px',
+    'display:flex',
+    'gap:8px',
+    'align-items:center',
+    'flex-wrap:wrap',
+    `border-bottom:1px solid ${VAR.border}`,
+  ].join(';'));
+
+  const filterInput = mkInput('Filter loaded results…', true);
+  const extInput = mkInput('Extensions: js, ts, py…');
+  extInput.style.width = '150px';
+
+  const hint = document.createElement('span');
+  hint.textContent = 'ℹ Searches paths and code snippets literally after loading — finds "hello-world" even if GitLab\'s tokenised index split it at the hyphen';
+  hint.style.cssText = `font-size:11px;color:${VAR.textMuted};flex-basis:100%;margin-top:2px;`;
+
+  filterInput.addEventListener('input', debounce(refilter, 200));
+  extInput.addEventListener('input', debounce(refilter, 200));
+
+  filterBar.append(mkLabel('Filter:'), filterInput, mkLabel('Ext:'), extInput, hint);
+
+  // ── Status + toolbar ──────────────────────────────────────────────────────
+  const statusRow = div([
+    'padding:6px 14px',
+    'display:flex',
+    'align-items:center',
+    'justify-content:space-between',
+    'gap:8px',
+    'flex-wrap:wrap',
+    `border-bottom:1px solid ${VAR.border}`,
+    'font-size:12px',
+  ].join(';'));
+
+  const countSpan = document.createElement('span');
+  countSpan.style.color = VAR.textMuted;
+  countSpan.textContent = 'Enter a query above and click Fetch All.';
+
+  const toolRow = div('display:flex;gap:6px;flex-wrap:wrap;');
+
+  const copyBtn = mkBtn('Copy repos', async () => {
+    const repos = extractRepoPaths(getVisible()).join('\n');
+    try {
+      await navigator.clipboard.writeText(repos);
+      const orig = copyBtn.textContent!;
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    } catch {
+      copyBtn.textContent = 'Copy failed';
+      setTimeout(() => { copyBtn.textContent = 'Copy repos'; }, 2000);
+    }
+  });
+
+  const divEl = div(`width:1px;background:${VAR.border};margin:2px 0;flex-shrink:0;`);
+
+  toolRow.append(
+    mkBtn('Expand all', () => {
+      list.querySelectorAll<HTMLElement>('.gcs-snippet').forEach(el => { el.style.display = 'block'; });
+      list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = 'rotate(90deg)'; });
+    }),
+    mkBtn('Collapse all', () => {
+      list.querySelectorAll<HTMLElement>('.gcs-snippet').forEach(el => { el.style.display = 'none'; });
+      list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = ''; });
+    }),
+    divEl,
+    mkBtn('Export JSON', () => {
+      triggerDownload(JSON.stringify(getVisible(), null, 2), 'application/json', 'json', queryInput.value);
+    }),
+    mkBtn('Export CSV', () => {
+      triggerDownload(toCsv(getVisible()), 'text/csv', 'csv', queryInput.value);
+    }),
+    copyBtn,
+  );
+
+  statusRow.append(countSpan, toolRow);
+
+  // ── Results list ──────────────────────────────────────────────────────────
+  const list = div('');
   list.id = 'gcs-list';
 
-  wrap.appendChild(status);
-  wrap.appendChild(list);
+  root.append(titleBar, fetchBar, filterBar, statusRow, list);
+
+  // ── Internal ──────────────────────────────────────────────────────────────
+
+  function getVisible(): SearchResult[] {
+    return filterResults(allResults, filterInput.value, parseExtensions(extInput.value));
+  }
+
+  function renderList(results: SearchResult[]): void {
+    list.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (const r of results) frag.appendChild(renderCard(r));
+    list.appendChild(frag);
+  }
+
+  function updateCount(): void {
+    const visible = getVisible();
+    if (!hasFetched) {
+      countSpan.textContent = 'Enter a query above and click Fetch All.';
+    } else if (allResults.length === 0) {
+      countSpan.textContent = 'No results found.';
+    } else if (visible.length === allResults.length) {
+      countSpan.textContent = `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? 's' : ''}`;
+    } else {
+      countSpan.textContent = `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (filtered)`;
+    }
+    countSpan.style.color = VAR.textMuted;
+  }
+
+  function refilter(): void {
+    if (!hasFetched) return;
+    renderList(getVisible());
+    updateCount();
+  }
 
   return {
-    el: wrap,
-
-    setStatus(loaded: number, total: number): void {
-      if (total === 0) {
-        status.textContent = 'No results';
-      } else if (loaded >= total) {
-        status.textContent = `${total.toLocaleString()} result${total !== 1 ? 's' : ''}`;
-      } else {
-        status.textContent = `Loading… ${loaded.toLocaleString()} / ~${total.toLocaleString()}`;
-      }
+    el: root,
+    closeBtn,
+    setFetchProgress(loaded, total) {
+      countSpan.textContent = `Loading… ${loaded.toLocaleString()} / ~${total.toLocaleString()} results`;
+      countSpan.style.color = VAR.textMuted;
     },
-
-    appendResults(results: SearchResult[]): void {
-      for (const r of results) list.appendChild(renderCard(r));
+    setResults(results) {
+      hasFetched = true;
+      allResults = results;
+      renderList(getVisible());
+      updateCount();
     },
-
-    setError(msg: string): void {
-      status.textContent = msg;
-      status.style.color = 'var(--gl-text-color-danger,#c0392b)';
-    },
-
-    clear(): void {
+    setError(msg) {
+      countSpan.textContent = msg;
+      countSpan.style.color = VAR.danger;
       list.innerHTML = '';
-      status.textContent = 'Loading…';
-      status.style.color = 'var(--gl-text-color-secondary)';
+    },
+    clear() {
+      hasFetched = false;
+      allResults = [];
+      list.innerHTML = '';
+      updateCount();
     },
   };
 }
 
-function renderCard(result: SearchResult): HTMLDivElement {
-  const card = document.createElement('div');
-  card.className = 'gcs-card';
-  card.style.cssText = 'border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;';
+// ── Card renderer ─────────────────────────────────────────────────────────────
 
-  // ── Header row (always visible, click to toggle snippet) ─────────────
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:baseline;gap:6px;padding:8px 16px;cursor:pointer;user-select:none;';
+function renderCard(result: SearchResult): HTMLDivElement {
+  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
+  card.className = 'gcs-card';
+
+  // Header row — always visible, click toggles snippet
+  const header = div([
+    'display:flex',
+    'align-items:baseline',
+    'gap:6px',
+    'padding:8px 14px',
+    'cursor:pointer',
+    'user-select:none',
+  ].join(';'));
 
   const chevron = document.createElement('span');
   chevron.className = 'gcs-chevron';
   chevron.textContent = '▶';
-  chevron.style.cssText = 'font-size:9px;color:var(--gl-text-color-secondary);flex-shrink:0;transition:transform .1s;';
+  chevron.style.cssText = `font-size:9px;color:${VAR.textMuted};flex-shrink:0;transition:transform .12s;`;
 
-  const meta = document.createElement('div');
-  meta.style.cssText = 'flex:1;min-width:0;';
+  const meta = div('flex:1;min-width:0;');
 
   if (result.project_path) {
-    const repoLabel = document.createElement('span');
-    repoLabel.textContent = result.project_path + ' · ';
-    repoLabel.style.cssText = 'font-size:11px;color:var(--gl-text-color-secondary);';
-    meta.appendChild(repoLabel);
+    const repo = document.createElement('span');
+    repo.textContent = result.project_path + ' · ';
+    repo.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
+    meta.appendChild(repo);
   }
 
   const link = document.createElement('a');
-  if (result.project_path) {
-    link.href = `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`;
-    link.textContent = result.path;
-  } else {
-    link.href = `${location.origin}/${result.path}`;
-    link.textContent = result.path;
-  }
-  link.style.cssText = 'color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;';
+  link.href = result.project_path
+    ? `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`
+    : `${location.origin}/${result.path}`;
+  link.textContent = result.path;
+  link.style.cssText = `color:${VAR.textLink};text-decoration:none;font-weight:500;word-break:break-all;`;
   link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
   link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
-  // Stop click on link from also toggling the card
   link.addEventListener('click', e => e.stopPropagation());
   meta.appendChild(link);
 
   const ref = document.createElement('span');
   ref.textContent = ` · ${result.ref}`;
-  ref.style.cssText = 'font-size:11px;color:var(--gl-text-color-secondary);';
+  ref.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
   meta.appendChild(ref);
 
-  header.appendChild(chevron);
-  header.appendChild(meta);
+  header.append(chevron, meta);
   card.appendChild(header);
 
-  // ── Snippet (collapsed by default) ───────────────────────────────────
+  // Snippet — hidden by default
   const snippet = document.createElement('pre');
   snippet.className = 'gcs-snippet';
-  snippet.style.cssText = 'display:none;margin:0;padding:8px 16px 10px 32px;background:var(--gl-background-color-subtle);overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
+  snippet.style.cssText = [
+    'display:none',
+    'margin:0',
+    'padding:8px 14px 10px 30px',
+    `background:${VAR.bgSubtle}`,
+    'overflow:auto',
+    'font:12px/1.4 "SFMono-Regular",Consolas,monospace',
+    'white-space:pre-wrap',
+    'word-break:break-all',
+    'max-height:200px',
+  ].join(';');
   if (result.data) {
     const lineHint = result.startline ? `Line ${result.startline}: ` : '';
     snippet.textContent = lineHint + result.data.slice(0, 800);
@@ -242,96 +361,10 @@ function renderCard(result: SearchResult): HTMLDivElement {
   return card;
 }
 
-export function createExportToolbar(getAllResults: () => SearchResult[]): HTMLDivElement {
-  const toolbar = document.createElement('div');
-  toolbar.id = 'gcs-toolbar';
-  toolbar.style.cssText = 'padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);';
+// ── Download helper ───────────────────────────────────────────────────────────
 
-  toolbar.appendChild(makeToolbarBtn('Expand all', () => {
-    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-snippet').forEach(el => {
-      el.style.display = 'block';
-    });
-    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-chevron').forEach(el => {
-      el.style.transform = 'rotate(90deg)';
-    });
-  }));
-
-  toolbar.appendChild(makeToolbarBtn('Collapse all', () => {
-    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-snippet').forEach(el => {
-      el.style.display = 'none';
-    });
-    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-chevron').forEach(el => {
-      el.style.transform = '';
-    });
-  }));
-
-  const divider = document.createElement('span');
-  divider.style.cssText = 'width:1px;background:var(--gl-border-color-default);margin:2px 0;';
-  toolbar.appendChild(divider);
-
-  toolbar.appendChild(makeToolbarBtn('Export JSON', () => {
-    triggerDownload(JSON.stringify(getAllResults(), null, 2), 'application/json', 'json');
-  }));
-
-  toolbar.appendChild(makeToolbarBtn('Export CSV', () => {
-    triggerDownload(toCsv(getAllResults()), 'text/csv', 'csv');
-  }));
-
-  const copyBtn = makeToolbarBtn('Copy repos', async () => {
-    const repos = extractRepoPaths(getAllResults()).join('\n');
-    try {
-      await navigator.clipboard.writeText(repos);
-      const orig = copyBtn.textContent ?? '';
-      copyBtn.textContent = 'Copied!';
-      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
-    } catch {
-      copyBtn.textContent = 'Copy failed';
-      setTimeout(() => { copyBtn.textContent = 'Copy repos'; }, 2000);
-    }
-  });
-  toolbar.appendChild(copyBtn);
-
-  return toolbar;
-}
-
-// ── Private helpers ───────────────────────────────────────────────────
-
-function makeFieldWrap(label: string): HTMLDivElement {
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
-  const lbl = document.createElement('label');
-  lbl.textContent = label;
-  lbl.style.cssText = 'font-size:11px;font-weight:600;color:var(--gl-text-color-secondary);text-transform:uppercase;letter-spacing:.4px;';
-  wrap.appendChild(lbl);
-  return wrap;
-}
-
-function makeTextInput(placeholder: string): HTMLInputElement {
-  const inp = document.createElement('input');
-  inp.type = 'text';
-  inp.placeholder = placeholder;
-  inp.style.cssText = 'border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 6px;width:140px;font:inherit;background:var(--gl-background-color-default);color:var(--gl-text-color-primary);';
-  return inp;
-}
-
-function debounce<T extends unknown[]>(fn: (...args: T) => void, ms: number): (...args: T) => void {
-  let t: ReturnType<typeof setTimeout>;
-  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-}
-
-function makeToolbarBtn(label: string, onClick: () => void): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.textContent = label;
-  btn.style.cssText = 'border:1px solid var(--gl-border-color-default);border-radius:4px;padding:3px 10px;cursor:pointer;background:var(--gl-background-color-default);font:12px system-ui;color:var(--gl-text-color-primary);';
-  btn.addEventListener('click', onClick);
-  return btn;
-}
-
-function triggerDownload(content: string, mimeType: string, ext: string): void {
-  const raw = (document.querySelector(
-    'input[data-testid="search-page-input"], input[name="search"]',
-  ) as HTMLInputElement | null)?.value ?? 'results';
-  const slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+function triggerDownload(content: string, mimeType: string, ext: string, query: string): void {
+  const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
   const date = new Date().toISOString().slice(0, 10);
   const blob = new Blob([content], { type: mimeType });
   const a = document.createElement('a');
