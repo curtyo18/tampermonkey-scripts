@@ -177,10 +177,27 @@ export function createResultsContainer(): ResultsContainer {
 
 function renderCard(result: SearchResult): HTMLDivElement {
   const card = document.createElement('div');
-  card.style.cssText = 'padding:12px 16px;border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;';
+  card.className = 'gcs-card';
+  card.style.cssText = 'border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;';
 
+  // ── Header row (always visible, click to toggle snippet) ─────────────
   const header = document.createElement('div');
-  header.style.marginBottom = '6px';
+  header.style.cssText = 'display:flex;align-items:baseline;gap:6px;padding:8px 16px;cursor:pointer;user-select:none;';
+
+  const chevron = document.createElement('span');
+  chevron.className = 'gcs-chevron';
+  chevron.textContent = '▶';
+  chevron.style.cssText = 'font-size:9px;color:var(--gl-text-color-secondary);flex-shrink:0;transition:transform .1s;';
+
+  const meta = document.createElement('div');
+  meta.style.cssText = 'flex:1;min-width:0;';
+
+  if (result.project_path) {
+    const repoLabel = document.createElement('span');
+    repoLabel.textContent = result.project_path + ' · ';
+    repoLabel.style.cssText = 'font-size:11px;color:var(--gl-text-color-secondary);';
+    meta.appendChild(repoLabel);
+  }
 
   const link = document.createElement('a');
   if (result.project_path) {
@@ -193,31 +210,34 @@ function renderCard(result: SearchResult): HTMLDivElement {
   link.style.cssText = 'color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;';
   link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
   link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
-
-  const repoLabel = result.project_path
-    ? document.createElement('span')
-    : null;
-  if (repoLabel) {
-    repoLabel.textContent = result.project_path!;
-    repoLabel.style.cssText = 'display:block;font-size:11px;color:var(--gl-text-color-secondary);margin-bottom:2px;';
-  }
+  // Stop click on link from also toggling the card
+  link.addEventListener('click', e => e.stopPropagation());
+  meta.appendChild(link);
 
   const ref = document.createElement('span');
   ref.textContent = ` · ${result.ref}`;
-  ref.style.color = 'var(--gl-text-color-secondary)';
+  ref.style.cssText = 'font-size:11px;color:var(--gl-text-color-secondary);';
+  meta.appendChild(ref);
 
-  if (repoLabel) header.appendChild(repoLabel);
-  header.appendChild(link);
-  header.appendChild(ref);
+  header.appendChild(chevron);
+  header.appendChild(meta);
   card.appendChild(header);
 
+  // ── Snippet (collapsed by default) ───────────────────────────────────
+  const snippet = document.createElement('pre');
+  snippet.className = 'gcs-snippet';
+  snippet.style.cssText = 'display:none;margin:0;padding:8px 16px 10px 32px;background:var(--gl-background-color-subtle);overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
   if (result.data) {
-    const pre = document.createElement('pre');
-    pre.style.cssText = 'margin:0;padding:8px 10px;background:var(--gl-background-color-subtle);border-radius:4px;overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
     const lineHint = result.startline ? `Line ${result.startline}: ` : '';
-    pre.textContent = lineHint + result.data.slice(0, 800);
-    card.appendChild(pre);
+    snippet.textContent = lineHint + result.data.slice(0, 800);
   }
+  card.appendChild(snippet);
+
+  header.addEventListener('click', () => {
+    const open = snippet.style.display !== 'none';
+    snippet.style.display = open ? 'none' : 'block';
+    chevron.style.transform = open ? '' : 'rotate(90deg)';
+  });
 
   return card;
 }
@@ -225,7 +245,29 @@ function renderCard(result: SearchResult): HTMLDivElement {
 export function createExportToolbar(getAllResults: () => SearchResult[]): HTMLDivElement {
   const toolbar = document.createElement('div');
   toolbar.id = 'gcs-toolbar';
-  toolbar.style.cssText = 'padding:8px 16px;display:flex;gap:8px;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);';
+  toolbar.style.cssText = 'padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);';
+
+  toolbar.appendChild(makeToolbarBtn('Expand all', () => {
+    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-snippet').forEach(el => {
+      el.style.display = 'block';
+    });
+    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-chevron').forEach(el => {
+      el.style.transform = 'rotate(90deg)';
+    });
+  }));
+
+  toolbar.appendChild(makeToolbarBtn('Collapse all', () => {
+    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-snippet').forEach(el => {
+      el.style.display = 'none';
+    });
+    document.querySelectorAll<HTMLElement>('#gcs-list .gcs-chevron').forEach(el => {
+      el.style.transform = '';
+    });
+  }));
+
+  const divider = document.createElement('span');
+  divider.style.cssText = 'width:1px;background:var(--gl-border-color-default);margin:2px 0;';
+  toolbar.appendChild(divider);
 
   toolbar.appendChild(makeToolbarBtn('Export JSON', () => {
     triggerDownload(JSON.stringify(getAllResults(), null, 2), 'application/json', 'json');

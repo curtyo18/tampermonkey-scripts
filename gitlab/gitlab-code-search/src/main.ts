@@ -152,10 +152,15 @@ function waitForDom(callback: () => void): void {
 })(window.history);
 
 let navDebounce: ReturnType<typeof setTimeout>;
+function isSearchPage(): boolean {
+  const p = location.pathname;
+  return p.endsWith('/search') || p.includes('/-/search');
+}
+
 function onNav(): void {
   clearTimeout(navDebounce);
   navDebounce = setTimeout(() => {
-    if (!location.pathname.includes('/-/search')) return;
+    if (!isSearchPage()) return;
     waitForDom(init);
   }, 250);
 }

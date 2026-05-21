@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitLab Code Search+
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.0.0
+// @version      1.1.0
 // @description  Augments GitLab search with filter UI, full pagination, and export
 // @match        *://*/-/search*
-// @match        *://*/*/-/search*
+// @include      /\/search\?/
 // @grant        none
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/curtyo18/tampermonkey-scripts/master/gitlab/gitlab-code-search/gitlab-code-search.user.js
@@ -266,9 +266,22 @@
   }
   function renderCard(result) {
     const card = document.createElement("div");
-    card.style.cssText = "padding:12px 16px;border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;";
+    card.className = "gcs-card";
+    card.style.cssText = "border-bottom:1px solid var(--gl-border-color-default);font:13px/1.5 system-ui,-apple-system,sans-serif;";
     const header = document.createElement("div");
-    header.style.marginBottom = "6px";
+    header.style.cssText = "display:flex;align-items:baseline;gap:6px;padding:8px 16px;cursor:pointer;user-select:none;";
+    const chevron = document.createElement("span");
+    chevron.className = "gcs-chevron";
+    chevron.textContent = "\u25B6";
+    chevron.style.cssText = "font-size:9px;color:var(--gl-text-color-secondary);flex-shrink:0;transition:transform .1s;";
+    const meta = document.createElement("div");
+    meta.style.cssText = "flex:1;min-width:0;";
+    if (result.project_path) {
+      const repoLabel = document.createElement("span");
+      repoLabel.textContent = result.project_path + " \xB7 ";
+      repoLabel.style.cssText = "font-size:11px;color:var(--gl-text-color-secondary);";
+      meta.appendChild(repoLabel);
+    }
     const link = document.createElement("a");
     if (result.project_path) {
       link.href = `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`;
@@ -284,31 +297,53 @@
     link.addEventListener("mouseleave", () => {
       link.style.textDecoration = "none";
     });
-    const repoLabel = result.project_path ? document.createElement("span") : null;
-    if (repoLabel) {
-      repoLabel.textContent = result.project_path;
-      repoLabel.style.cssText = "display:block;font-size:11px;color:var(--gl-text-color-secondary);margin-bottom:2px;";
-    }
+    link.addEventListener("click", (e) => e.stopPropagation());
+    meta.appendChild(link);
     const ref = document.createElement("span");
     ref.textContent = ` \xB7 ${result.ref}`;
-    ref.style.color = "var(--gl-text-color-secondary)";
-    if (repoLabel) header.appendChild(repoLabel);
-    header.appendChild(link);
-    header.appendChild(ref);
+    ref.style.cssText = "font-size:11px;color:var(--gl-text-color-secondary);";
+    meta.appendChild(ref);
+    header.appendChild(chevron);
+    header.appendChild(meta);
     card.appendChild(header);
+    const snippet = document.createElement("pre");
+    snippet.className = "gcs-snippet";
+    snippet.style.cssText = 'display:none;margin:0;padding:8px 16px 10px 32px;background:var(--gl-background-color-subtle);overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
     if (result.data) {
-      const pre = document.createElement("pre");
-      pre.style.cssText = 'margin:0;padding:8px 10px;background:var(--gl-background-color-subtle);border-radius:4px;overflow:auto;font:12px/1.4 "SFMono-Regular",Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:200px;';
       const lineHint = result.startline ? `Line ${result.startline}: ` : "";
-      pre.textContent = lineHint + result.data.slice(0, 800);
-      card.appendChild(pre);
+      snippet.textContent = lineHint + result.data.slice(0, 800);
     }
+    card.appendChild(snippet);
+    header.addEventListener("click", () => {
+      const open = snippet.style.display !== "none";
+      snippet.style.display = open ? "none" : "block";
+      chevron.style.transform = open ? "" : "rotate(90deg)";
+    });
     return card;
   }
   function createExportToolbar(getAllResults) {
     const toolbar = document.createElement("div");
     toolbar.id = "gcs-toolbar";
-    toolbar.style.cssText = "padding:8px 16px;display:flex;gap:8px;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);";
+    toolbar.style.cssText = "padding:8px 16px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--gl-border-color-default);background:var(--gl-background-color-subtle);";
+    toolbar.appendChild(makeToolbarBtn("Expand all", () => {
+      document.querySelectorAll("#gcs-list .gcs-snippet").forEach((el) => {
+        el.style.display = "block";
+      });
+      document.querySelectorAll("#gcs-list .gcs-chevron").forEach((el) => {
+        el.style.transform = "rotate(90deg)";
+      });
+    }));
+    toolbar.appendChild(makeToolbarBtn("Collapse all", () => {
+      document.querySelectorAll("#gcs-list .gcs-snippet").forEach((el) => {
+        el.style.display = "none";
+      });
+      document.querySelectorAll("#gcs-list .gcs-chevron").forEach((el) => {
+        el.style.transform = "";
+      });
+    }));
+    const divider = document.createElement("span");
+    divider.style.cssText = "width:1px;background:var(--gl-border-color-default);margin:2px 0;";
+    toolbar.appendChild(divider);
     toolbar.appendChild(makeToolbarBtn("Export JSON", () => {
       triggerDownload(JSON.stringify(getAllResults(), null, 2), "application/json", "json");
     }));
@@ -503,10 +538,14 @@
     window.addEventListener("popstate", fire);
   })(window.history);
   var navDebounce;
+  function isSearchPage() {
+    const p = location.pathname;
+    return p.endsWith("/search") || p.includes("/-/search");
+  }
   function onNav() {
     clearTimeout(navDebounce);
     navDebounce = setTimeout(() => {
-      if (!location.pathname.includes("/-/search")) return;
+      if (!isSearchPage()) return;
       waitForDom(init);
     }, 250);
   }
