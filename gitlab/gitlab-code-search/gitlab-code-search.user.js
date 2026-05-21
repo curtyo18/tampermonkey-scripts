@@ -24,6 +24,7 @@
     const parts = [mainQuery.trim()];
     if (filters.filename) parts.push(`filename:${filters.filename}`);
     if (filters.path) parts.push(`path:${filters.path}`);
+    if (filters.extensions?.length === 1) parts.push(`extension:${filters.extensions[0]}`);
     return parts.filter(Boolean).join(" ");
   }
   function extractRepoPaths(results) {
@@ -428,7 +429,7 @@
         ...r,
         project_path: r.project_id != null ? projectPaths.get(r.project_id) ?? void 0 : void 0
       }));
-      const filtered = filterState.extensions.length > 0 ? enriched.filter((r) => {
+      const filtered = filterState.extensions.length > 1 ? enriched.filter((r) => {
         const ext = r.filename.split(".").pop()?.toLowerCase() ?? "";
         return filterState.extensions.some((e) => e.toLowerCase() === ext);
       }) : enriched;

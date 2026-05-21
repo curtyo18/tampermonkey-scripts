@@ -15,11 +15,13 @@ export function resolveApiEndpoint(pathname: string, projectId: number | null): 
 export function buildQuery(mainQuery: string, filters: Partial<FilterState>): string {
   // GitLab's filter syntax (filename:X, path:X) does not support quoting,
   // so filter values with spaces will behave unexpectedly — UI controls should prevent this.
-  // Extensions are NOT sent to the server: multiple extensions require OR logic which the server
-  // applies as AND, returning zero results. Extension filtering is applied client-side instead.
+  // Multiple extensions cannot be sent server-side: GitLab applies AND logic between them,
+  // returning zero results. For a single extension, server-side filtering is strictly better
+  // because it avoids wasting the API result cap on non-matching file types.
   const parts: string[] = [mainQuery.trim()];
   if (filters.filename) parts.push(`filename:${filters.filename}`);
   if (filters.path) parts.push(`path:${filters.path}`);
+  if (filters.extensions?.length === 1) parts.push(`extension:${filters.extensions[0]}`);
   return parts.filter(Boolean).join(' ');
 }
 

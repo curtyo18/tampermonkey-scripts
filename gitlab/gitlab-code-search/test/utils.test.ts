@@ -37,12 +37,13 @@ describe('buildQuery', () => {
     expect(buildQuery('  foo  ', {})).toBe('foo');
   });
 
-  it('appends a single extension filter', () => {
+  it('sends a single extension server-side', () => {
     expect(buildQuery('foo', { extensions: ['js'] })).toBe('foo extension:js');
   });
 
-  it('appends multiple extension filters', () => {
-    expect(buildQuery('foo', { extensions: ['js', 'ts'] })).toBe('foo extension:js extension:ts');
+  it('omits multiple extensions from query (client-side OR logic instead)', () => {
+    // GitLab applies AND between multiple extension: tokens; OR filtering is done client-side.
+    expect(buildQuery('foo', { extensions: ['js', 'ts'] })).toBe('foo');
   });
 
   it('appends filename filter', () => {
@@ -53,9 +54,9 @@ describe('buildQuery', () => {
     expect(buildQuery('foo', { path: 'src/components' })).toBe('foo path:src/components');
   });
 
-  it('combines all filters', () => {
+  it('combines all filters (filename and path before extension)', () => {
     expect(buildQuery('foo', { extensions: ['rb'], filename: 'bar', path: 'lib' }))
-      .toBe('foo extension:rb filename:bar path:lib');
+      .toBe('foo filename:bar path:lib extension:rb');
   });
 
   it('ignores empty string filters', () => {
@@ -68,30 +69,30 @@ describe('buildQuery', () => {
 });
 
 describe('extractRepoPaths', () => {
-  it('returns unique namespace/project pairs', () => {
+  it('returns unique project_path values', () => {
     const results: SearchResult[] = [
-      { path: 'org/repo1/src/a.ts', project_id: 1, filename: 'a.ts', ref: 'main', startline: 1 },
-      { path: 'org/repo1/src/b.ts', project_id: 1, filename: 'b.ts', ref: 'main', startline: 2 },
-      { path: 'org/repo2/lib/c.ts', project_id: 2, filename: 'c.ts', ref: 'main', startline: 3 },
+      { path: 'src/a.ts', project_id: 1, filename: 'a.ts', ref: 'main', startline: 1, project_path: 'org/repo1' },
+      { path: 'src/b.ts', project_id: 1, filename: 'b.ts', ref: 'main', startline: 2, project_path: 'org/repo1' },
+      { path: 'lib/c.ts', project_id: 2, filename: 'c.ts', ref: 'main', startline: 3, project_path: 'org/repo2' },
     ];
     expect(extractRepoPaths(results)).toEqual(['org/repo1', 'org/repo2']);
   });
 
   it('returns a sorted list', () => {
-    const r = (path: string): SearchResult => ({ path, project_id: 1, filename: '', ref: 'main', startline: 1 });
-    expect(extractRepoPaths([r('z/z/x.ts'), r('a/a/x.ts')])).toEqual(['a/a', 'z/z']);
+    const r = (project_path: string): SearchResult => ({ path: '', project_id: 1, filename: '', ref: 'main', startline: 1, project_path });
+    expect(extractRepoPaths([r('z/z'), r('a/a')])).toEqual(['a/a', 'z/z']);
   });
 
-  it('takes the first two segments from deep paths', () => {
-    const r = (path: string): SearchResult => ({ path, project_id: 1, filename: '', ref: 'main', startline: 1 });
-    expect(extractRepoPaths([r('org/repo/src/deep/file.ts')])).toEqual(['org/repo']);
+  it('deduplicates results with the same project_path', () => {
+    const r: SearchResult = { path: 'a.ts', project_id: 1, filename: 'a.ts', ref: 'main', startline: 1, project_path: 'org/repo' };
+    expect(extractRepoPaths([r, r])).toEqual(['org/repo']);
   });
 
   it('returns empty array for empty input', () => {
     expect(extractRepoPaths([])).toEqual([]);
   });
 
-  it('ignores results with fewer than two path segments', () => {
+  it('ignores results with no project_path', () => {
     const r: SearchResult = { path: 'onlyone', project_id: null, filename: '', ref: 'main', startline: null };
     expect(extractRepoPaths([r])).toEqual([]);
   });

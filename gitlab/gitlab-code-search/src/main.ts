@@ -75,10 +75,11 @@ async function runSearch(container: ResultsContainer, filterState: FilterState, 
       project_path: r.project_id != null ? (projectPaths.get(r.project_id) ?? undefined) : undefined,
     }));
 
-    // Apply extension filter client-side (OR logic across extensions, works without
-    // server-side Advanced Search support, and lets multiple extensions be combined).
+    // Extension filtering: single extension is handled server-side (see buildQuery).
+    // Multiple extensions require client-side OR logic because GitLab applies AND between
+    // multiple extension: filters, which returns zero results.
     const filtered =
-      filterState.extensions.length > 0
+      filterState.extensions.length > 1
         ? enriched.filter(r => {
             const ext = r.filename.split('.').pop()?.toLowerCase() ?? '';
             return filterState.extensions.some(e => e.toLowerCase() === ext);
