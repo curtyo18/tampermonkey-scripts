@@ -23,3 +23,13 @@ export interface FetchCallbacks {
 export interface ApiError extends Error {
   status?: number;
 }
+
+export interface DeepMatchLine {
+  lineNum: number;
+  text: string;
+}
+
+export interface DeepMatch {
+  result: SearchResult;
+  lines: DeepMatchLine[];
+}

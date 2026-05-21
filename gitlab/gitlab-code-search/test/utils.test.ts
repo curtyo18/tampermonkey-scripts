@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolveApiEndpoint, filterResults, parseExtensions, extractRepoPaths, toCsv } from '../src/utils.js';
-import type { SearchResult } from '../src/types.js';
+import { resolveApiEndpoint, buildApiQuery, uniqueFiles, filterResults, parseExtensions, extractRepoPaths, toCsv, toCsvDeep } from '../src/utils.js';
+import type { SearchResult, DeepMatch } from '../src/types.js';
 
 const r = (overrides: Partial<SearchResult> = {}): SearchResult => ({
   project_id: 1,
@@ -40,6 +40,58 @@ describe('resolveApiEndpoint', () => {
 
   it('returns global endpoint for bare /search path', () => {
     expect(resolveApiEndpoint('/search', null)).toBe('/api/v4/search');
+  });
+});
+
+describe('buildApiQuery', () => {
+  it('returns raw query unchanged when no quick-add fields', () => {
+    expect(buildApiQuery('tanstack', '', '')).toBe('tanstack');
+  });
+
+  it('appends filename filter', () => {
+    expect(buildApiQuery('tanstack', 'package-lock.json', '')).toBe('tanstack filename:package-lock.json');
+  });
+
+  it('appends single extension server-side', () => {
+    expect(buildApiQuery('tanstack', '', 'ts')).toBe('tanstack extension:ts');
+  });
+
+  it('omits multiple extensions from API query (client-side only)', () => {
+    expect(buildApiQuery('tanstack', '', 'ts, js')).toBe('tanstack');
+  });
+
+  it('combines filename and single extension', () => {
+    expect(buildApiQuery('tanstack', 'package-lock.json', 'json'))
+      .toBe('tanstack filename:package-lock.json extension:json');
+  });
+
+  it('handles empty raw query with filename only', () => {
+    expect(buildApiQuery('', 'package-lock.json', '')).toBe('filename:package-lock.json');
+  });
+});
+
+describe('uniqueFiles', () => {
+  it('deduplicates results with the same project_id + path + ref', () => {
+    const a = r({ path: 'src/a.ts', ref: 'main', startline: 1 });
+    const b = r({ path: 'src/a.ts', ref: 'main', startline: 20 });
+    const c = r({ path: 'src/b.ts', ref: 'main', startline: 1 });
+    expect(uniqueFiles([a, b, c])).toHaveLength(2);
+  });
+
+  it('treats same path on different refs as distinct files', () => {
+    const a = r({ path: 'src/a.ts', ref: 'main' });
+    const b = r({ path: 'src/a.ts', ref: 'dev' });
+    expect(uniqueFiles([a, b])).toHaveLength(2);
+  });
+
+  it('returns first occurrence when deduplicating', () => {
+    const a = r({ path: 'src/a.ts', startline: 1 });
+    const b = r({ path: 'src/a.ts', startline: 99 });
+    expect(uniqueFiles([a, b])[0].startline).toBe(1);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(uniqueFiles([])).toHaveLength(0);
   });
 });
 
@@ -139,6 +191,26 @@ describe('extractRepoPaths', () => {
   it('ignores results with no project_path', () => {
     const result: SearchResult = { path: 'x', project_id: null, filename: 'x', ref: 'main', startline: null };
     expect(extractRepoPaths([result])).toEqual([]);
+  });
+});
+
+describe('toCsvDeep', () => {
+  it('has the correct header', () => {
+    expect(toCsvDeep([])).toBe('project_id,project_path,path,filename,ref,lineNum,text');
+  });
+
+  it('produces one row per matching line', () => {
+    const match: DeepMatch = {
+      result: r({ project_path: 'org/repo' }),
+      lines: [
+        { lineNum: 10, text: '"hello-world": "^1.0.0",' },
+        { lineNum: 20, text: '"hello-world": "^2.0.0",' },
+      ],
+    };
+    const rows = toCsvDeep([match]).split('\n');
+    expect(rows).toHaveLength(3); // header + 2 lines
+    expect(rows[1]).toContain('"10"');
+    expect(rows[2]).toContain('"20"');
   });
 });
 

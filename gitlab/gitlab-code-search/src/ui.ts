@@ -1,10 +1,10 @@
-import { filterResults, parseExtensions, extractRepoPaths, toCsv } from './utils.js';
-import type { SearchResult } from './types.js';
+import { buildApiQuery, filterResults, parseExtensions, extractRepoPaths, toCsv, toCsvDeep, uniqueFiles } from './utils.js';
+import type { SearchResult, DeepMatch } from './types.js';
 
-// ── CSS helpers ──────────────────────────────────────────────────────────────
+// ── CSS helpers ───────────────────────────────────────────────────────────────
 // System colour keywords (Canvas/CanvasText/ButtonBorder/GrayText) adapt to
-// OS dark-mode automatically and work on every browser without any variables.
-// GitLab CSS custom properties are applied as enhancements where they exist.
+// OS dark-mode automatically and work on every browser, regardless of whether
+// the GitLab CSS custom properties are defined on the running instance.
 
 const VAR = {
   bg:        'var(--gl-background-color-default, Canvas)',
@@ -29,7 +29,7 @@ function mkInput(placeholder: string, flex?: boolean): HTMLInputElement {
   const inp = document.createElement('input');
   inp.type = 'text';
   inp.placeholder = placeholder;
-  // stopPropagation prevents a parent GitLab <form> from capturing Enter
+  // stopPropagation prevents an ancestor GitLab <form> capturing Enter
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') e.stopPropagation(); });
   inp.style.cssText = [
     'padding:4px 8px',
@@ -46,7 +46,7 @@ function mkInput(placeholder: string, flex?: boolean): HTMLInputElement {
 
 function mkBtn(label: string, onClick: (() => void) | (() => Promise<void>), primary = false): HTMLButtonElement {
   const btn = document.createElement('button');
-  btn.type = 'button'; // prevent implicit form submission
+  btn.type = 'button';
   btn.textContent = label;
   btn.style.cssText = [
     'padding:4px 10px',
@@ -80,18 +80,22 @@ function debounce<T extends unknown[]>(fn: (...args: T) => void, ms: number): (.
 export interface PanelHandle {
   el: HTMLDivElement;
   closeBtn: HTMLButtonElement;
-  /** Show per-batch progress during a fetch */
   setFetchProgress(loaded: number, total: number): void;
-  /** Called once all pages + project-path enrichment are done */
   setResults(results: SearchResult[]): void;
-  /** Show an inline error */
   setError(msg: string): void;
-  /** Reset to empty-state for a new fetch */
   clear(): void;
+  setDeepProgress(done: number, total: number, matchCount: number): void;
+  setDeepResults(matches: DeepMatch[]): void;
+  setDeepError(msg: string): void;
 }
 
-export function createPanel(initialQuery: string, onFetch: (query: string) => void): PanelHandle {
+export function createPanel(
+  initialQuery: string,
+  onFetch: (query: string) => void,
+  onDeepSearch: (files: SearchResult[], query: string) => void,
+): PanelHandle {
   let allResults: SearchResult[] = [];
+  let deepResults: DeepMatch[] | null = null;
   let hasFetched = false;
 
   // ── Root ──────────────────────────────────────────────────────────────────
@@ -127,41 +131,30 @@ export function createPanel(initialQuery: string, onFetch: (query: string) => vo
     'display:flex',
     'gap:8px',
     'align-items:center',
-    `border-bottom:1px solid ${VAR.border}`,
-  ].join(';'));
-  const queryInput = mkInput('Search query — supports extension:js  filename:*.ts  path:src', true);
-  queryInput.value = initialQuery;
-  const fetchBtn = mkBtn('Fetch All', () => {
-    const q = queryInput.value.trim();
-    if (q) onFetch(q);
-  }, true);
-  queryInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); fetchBtn.click(); }
-  });
-  fetchBar.append(queryInput, fetchBtn);
-
-  // ── Filter bar ────────────────────────────────────────────────────────────
-  const filterBar = div([
-    'padding:8px 14px',
-    'display:flex',
-    'gap:8px',
-    'align-items:center',
     'flex-wrap:wrap',
     `border-bottom:1px solid ${VAR.border}`,
   ].join(';'));
 
-  const filterInput = mkInput('Filter loaded results…', true);
-  const extInput = mkInput('Extensions: js, ts, py…');
-  extInput.style.width = '150px';
+  const queryInput = mkInput('Search query (GitLab syntax: extension:js  filename:*.ts  path:src)', true);
+  queryInput.value = initialQuery;
+  queryInput.style.minWidth = '200px';
 
-  const hint = document.createElement('span');
-  hint.textContent = 'ℹ Searches paths and code snippets literally after loading — finds "hello-world" even if GitLab\'s tokenised index split it at the hyphen';
-  hint.style.cssText = `font-size:11px;color:${VAR.textMuted};flex-basis:100%;margin-top:2px;`;
+  const filenameInput = mkInput('Filename');
+  filenameInput.style.width = '160px';
 
-  filterInput.addEventListener('input', debounce(refilter, 200));
-  extInput.addEventListener('input', debounce(refilter, 200));
+  const extInput = mkInput('Extension: ts, js…');
+  extInput.style.width = '130px';
 
-  filterBar.append(mkLabel('Filter:'), filterInput, mkLabel('Ext:'), extInput, hint);
+  const fetchBtn = mkBtn('Fetch All', () => {
+    const q = buildApiQuery(queryInput.value.trim(), filenameInput.value.trim(), extInput.value);
+    if (q) onFetch(q);
+  }, true);
+
+  queryInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); fetchBtn.click(); }
+  });
+
+  fetchBar.append(queryInput, mkLabel('File:'), filenameInput, mkLabel('Ext:'), extInput, fetchBtn);
 
   // ── Status + toolbar ──────────────────────────────────────────────────────
   const statusRow = div([
@@ -179,12 +172,14 @@ export function createPanel(initialQuery: string, onFetch: (query: string) => vo
   countSpan.style.color = VAR.textMuted;
   countSpan.textContent = 'Enter a query above and click Fetch All.';
 
-  const toolRow = div('display:flex;gap:6px;flex-wrap:wrap;');
+  const toolRow = div('display:flex;gap:6px;flex-wrap:wrap;align-items:center;');
 
   const copyBtn = mkBtn('Copy repos', async () => {
-    const repos = extractRepoPaths(getVisible()).join('\n');
+    const repos = deepResults !== null
+      ? [...new Set(deepResults.map(m => m.result.project_path).filter(Boolean) as string[])].sort()
+      : extractRepoPaths(getVisible());
     try {
-      await navigator.clipboard.writeText(repos);
+      await navigator.clipboard.writeText(repos.join('\n'));
       const orig = copyBtn.textContent!;
       copyBtn.textContent = 'Copied!';
       setTimeout(() => { copyBtn.textContent = orig; }, 1500);
@@ -198,19 +193,25 @@ export function createPanel(initialQuery: string, onFetch: (query: string) => vo
 
   toolRow.append(
     mkBtn('Expand all', () => {
-      list.querySelectorAll<HTMLElement>('.gcs-snippet').forEach(el => { el.style.display = 'block'; });
+      list.querySelectorAll<HTMLElement>('.gcs-chevron-content').forEach(el => { el.style.display = 'block'; });
       list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = 'rotate(90deg)'; });
     }),
     mkBtn('Collapse all', () => {
-      list.querySelectorAll<HTMLElement>('.gcs-snippet').forEach(el => { el.style.display = 'none'; });
+      list.querySelectorAll<HTMLElement>('.gcs-chevron-content').forEach(el => { el.style.display = 'none'; });
       list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = ''; });
     }),
     divEl,
     mkBtn('Export JSON', () => {
-      triggerDownload(JSON.stringify(getVisible(), null, 2), 'application/json', 'json', queryInput.value);
+      const content = deepResults !== null
+        ? JSON.stringify(deepResults.map(m => ({ ...m.result, matches: m.lines })), null, 2)
+        : JSON.stringify(getVisible(), null, 2);
+      triggerDownload(content, 'application/json', 'json', queryInput.value);
     }),
     mkBtn('Export CSV', () => {
-      triggerDownload(toCsv(getVisible()), 'text/csv', 'csv', queryInput.value);
+      const content = deepResults !== null
+        ? toCsvDeep(deepResults)
+        : toCsv(getVisible());
+      triggerDownload(content, 'text/csv', 'csv', queryInput.value);
     }),
     copyBtn,
   );
@@ -221,75 +222,196 @@ export function createPanel(initialQuery: string, onFetch: (query: string) => vo
   const list = div('');
   list.id = 'gcs-list';
 
-  root.append(titleBar, fetchBar, filterBar, statusRow, list);
+  // ── Deep search section ───────────────────────────────────────────────────
+  const deepSection = div([
+    `border-top:1px solid ${VAR.border}`,
+    'padding:10px 14px',
+    'display:none',
+  ].join(';'));
 
-  // ── Internal ──────────────────────────────────────────────────────────────
+  const deepTitle = mkLabel('Deep content search');
+  deepTitle.style.cssText += ';display:block;margin-bottom:8px;font-size:12px;';
+
+  const deepInputRow = div('display:flex;gap:8px;align-items:center;');
+  const deepInput = mkInput('Literal string — e.g. "tanstack-hello": "^1.0.0"', true);
+  const deepBtn = mkBtn('Search', handleDeepClick);
+  deepInputRow.append(deepInput, deepBtn);
+
+  deepInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); deepBtn.click(); }
+  });
+
+  // Warning row (hidden by default)
+  const warningRow = div('display:none;');
+
+  const deepHint = document.createElement('p');
+  deepHint.style.cssText = `margin:6px 0 0;font-size:11px;color:${VAR.textMuted};`;
+  deepHint.textContent = 'ℹ Fetches full file content for each result — finds literal matches that GitLab\'s tokenised index splits (e.g. hello-world, "pkg": "^1.0").';
+
+  deepSection.append(deepTitle, deepInputRow, warningRow, deepHint);
+
+  root.append(titleBar, fetchBar, statusRow, list, deepSection);
+
+  // ── Internal helpers ──────────────────────────────────────────────────────
 
   function getVisible(): SearchResult[] {
-    return filterResults(allResults, filterInput.value, parseExtensions(extInput.value));
+    return filterResults(allResults, '', parseExtensions(extInput.value));
   }
 
-  function renderList(results: SearchResult[]): void {
+  function renderApiList(results: SearchResult[]): void {
     list.innerHTML = '';
     const frag = document.createDocumentFragment();
     for (const r of results) frag.appendChild(renderCard(r));
     list.appendChild(frag);
   }
 
+  function renderDeepList(matches: DeepMatch[]): void {
+    list.innerHTML = '';
+    if (matches.length === 0) {
+      const empty = div(`padding:16px;text-align:center;color:${VAR.textMuted};font-size:13px;`);
+      empty.textContent = 'No matches found in full file content.';
+      list.appendChild(empty);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const m of matches) frag.appendChild(renderDeepCard(m));
+    list.appendChild(frag);
+  }
+
   function updateCount(): void {
-    const visible = getVisible();
     if (!hasFetched) {
       countSpan.textContent = 'Enter a query above and click Fetch All.';
     } else if (allResults.length === 0) {
       countSpan.textContent = 'No results found.';
-    } else if (visible.length === allResults.length) {
-      countSpan.textContent = `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? 's' : ''}`;
     } else {
-      countSpan.textContent = `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (filtered)`;
+      const visible = getVisible();
+      countSpan.textContent = visible.length === allResults.length
+        ? `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? 's' : ''}`
+        : `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (ext filter active)`;
     }
     countSpan.style.color = VAR.textMuted;
   }
 
-  function refilter(): void {
-    if (!hasFetched) return;
-    renderList(getVisible());
+  // Extension filter: re-render API results when ext field changes (no deep search effect)
+  extInput.addEventListener('input', debounce(() => {
+    if (!hasFetched || deepResults !== null) return;
+    renderApiList(getVisible());
     updateCount();
+  }, 300));
+
+  function handleDeepClick(): void {
+    const q = deepInput.value.trim();
+    if (!q) return;
+    const files = uniqueFiles(allResults).filter(r => r.project_id !== null);
+    if (files.length === 0) return;
+
+    if (files.length > 500) {
+      showDeepWarning(files.length, () => startDeep(files, q));
+    } else {
+      startDeep(files, q);
+    }
+  }
+
+  function showDeepWarning(fileCount: number, proceed: () => void): void {
+    deepInputRow.style.display = 'none';
+    warningRow.style.display = 'flex';
+    warningRow.style.cssText += ';gap:8px;align-items:center;flex-wrap:wrap;';
+    warningRow.innerHTML = '';
+    const msg = document.createElement('span');
+    msg.style.cssText = `font-size:12px;color:${VAR.danger};`;
+    msg.textContent = `⚠ This will fetch ${fileCount.toLocaleString()} files — large files (e.g. package-lock.json) can be several MB each. Proceed?`;
+    const proceedBtn = mkBtn('Proceed', () => { resetDeepWarning(); proceed(); });
+    const cancelBtn  = mkBtn('Cancel',  resetDeepWarning);
+    warningRow.append(msg, proceedBtn, cancelBtn);
+  }
+
+  function resetDeepWarning(): void {
+    warningRow.style.display = 'none';
+    warningRow.innerHTML = '';
+    deepInputRow.style.display = 'flex';
+  }
+
+  function startDeep(files: SearchResult[], q: string): void {
+    deepResults = null;
+    deepBtn.disabled = true;
+    onDeepSearch(files, q);
   }
 
   return {
     el: root,
     closeBtn,
+
     setFetchProgress(loaded, total) {
       countSpan.textContent = `Loading… ${loaded.toLocaleString()} / ~${total.toLocaleString()} results`;
       countSpan.style.color = VAR.textMuted;
     },
+
     setResults(results) {
       hasFetched = true;
+      deepResults = null;
+      deepBtn.disabled = false;
       allResults = results;
-      renderList(getVisible());
+      renderApiList(getVisible());
       updateCount();
+      // Show deep search section when there are results to search
+      deepSection.style.display = results.length > 0 ? 'block' : 'none';
     },
+
     setError(msg) {
       countSpan.textContent = msg;
       countSpan.style.color = VAR.danger;
       list.innerHTML = '';
+      deepSection.style.display = 'none';
     },
+
     clear() {
       hasFetched = false;
+      deepResults = null;
       allResults = [];
       list.innerHTML = '';
+      deepSection.style.display = 'none';
+      resetDeepWarning();
+      deepBtn.disabled = false;
       updateCount();
+    },
+
+    setDeepProgress(done, total, matchCount) {
+      countSpan.textContent = `Deep search: ${done.toLocaleString()} / ${total.toLocaleString()} files fetched · ${matchCount} match${matchCount !== 1 ? 'es' : ''} so far`;
+      countSpan.style.color = VAR.textMuted;
+    },
+
+    setDeepResults(matches) {
+      deepResults = matches;
+      deepBtn.disabled = false;
+      renderDeepList(matches);
+      const cleared = div('display:flex;gap:8px;align-items:center;margin-top:8px;');
+      const summary = document.createElement('span');
+      summary.style.cssText = `font-size:12px;color:${VAR.textMuted};`;
+      summary.textContent = `Found in ${matches.length} file${matches.length !== 1 ? 's' : ''}.`;
+      const clearBtn = mkBtn('Clear — back to API results', () => {
+        deepResults = null;
+        deepBtn.disabled = false;
+        renderApiList(getVisible());
+        updateCount();
+        cleared.remove();
+        deepInputRow.style.display = 'flex';
+      });
+      cleared.append(summary, clearBtn);
+      deepInputRow.style.display = 'none';
+      deepSection.insertBefore(cleared, deepHint);
+    },
+
+    setDeepError(msg) {
+      deepBtn.disabled = false;
+      countSpan.textContent = msg;
+      countSpan.style.color = VAR.danger;
     },
   };
 }
 
-// ── Card renderer ─────────────────────────────────────────────────────────────
+// ── Card renderers ────────────────────────────────────────────────────────────
 
-function renderCard(result: SearchResult): HTMLDivElement {
-  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
-  card.className = 'gcs-card';
-
-  // Header row — always visible, click toggles snippet
+function cardHeader(result: SearchResult): { header: HTMLDivElement; chevron: HTMLSpanElement } {
   const header = div([
     'display:flex',
     'align-items:baseline',
@@ -324,17 +446,32 @@ function renderCard(result: SearchResult): HTMLDivElement {
   link.addEventListener('click', e => e.stopPropagation());
   meta.appendChild(link);
 
+  return { header: (header.append(chevron, meta), header), chevron };
+}
+
+function toggleOnClick(header: HTMLElement, chevron: HTMLSpanElement, content: HTMLElement): void {
+  header.addEventListener('click', () => {
+    const open = content.style.display !== 'none';
+    content.style.display = open ? 'none' : 'block';
+    chevron.style.transform = open ? '' : 'rotate(90deg)';
+  });
+}
+
+function renderCard(result: SearchResult): HTMLDivElement {
+  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
+  card.className = 'gcs-card';
+
+  const { header, chevron } = cardHeader(result);
+
   const ref = document.createElement('span');
   ref.textContent = ` · ${result.ref}`;
   ref.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
-  meta.appendChild(ref);
+  header.appendChild(ref);
 
-  header.append(chevron, meta);
   card.appendChild(header);
 
-  // Snippet — hidden by default
   const snippet = document.createElement('pre');
-  snippet.className = 'gcs-snippet';
+  snippet.className = 'gcs-chevron-content';
   snippet.style.cssText = [
     'display:none',
     'margin:0',
@@ -351,13 +488,45 @@ function renderCard(result: SearchResult): HTMLDivElement {
     snippet.textContent = lineHint + result.data.slice(0, 800);
   }
   card.appendChild(snippet);
+  toggleOnClick(header, chevron, snippet);
+  return card;
+}
 
-  header.addEventListener('click', () => {
-    const open = snippet.style.display !== 'none';
-    snippet.style.display = open ? 'none' : 'block';
-    chevron.style.transform = open ? '' : 'rotate(90deg)';
-  });
+function renderDeepCard(match: DeepMatch): HTMLDivElement {
+  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
 
+  const { header, chevron } = cardHeader(match.result);
+
+  const refAndCount = document.createElement('span');
+  refAndCount.textContent = ` · ${match.result.ref} · ${match.lines.length} match${match.lines.length !== 1 ? 'es' : ''}`;
+  refAndCount.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
+  header.appendChild(refAndCount);
+  card.appendChild(header);
+
+  const linesDiv = div([
+    'display:none',
+    'padding:4px 14px 10px 30px',
+    `background:${VAR.bgSubtle}`,
+    'font:12px/1.6 "SFMono-Regular",Consolas,monospace',
+    'overflow:auto',
+    'max-height:300px',
+  ].join(';'));
+  linesDiv.className = 'gcs-chevron-content';
+
+  for (const { lineNum, text } of match.lines) {
+    const row = div('display:flex;gap:12px;');
+    const num = document.createElement('span');
+    num.textContent = String(lineNum);
+    num.style.cssText = `color:${VAR.textMuted};user-select:none;min-width:40px;text-align:right;flex-shrink:0;`;
+    const txt = document.createElement('span');
+    txt.textContent = text.trim();
+    txt.style.cssText = 'overflow:auto;white-space:pre;';
+    row.append(num, txt);
+    linesDiv.appendChild(row);
+  }
+
+  card.appendChild(linesDiv);
+  toggleOnClick(header, chevron, linesDiv);
   return card;
 }
 

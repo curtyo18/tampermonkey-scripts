@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLab Code Search+
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.2.0
+// @version      1.3.0
 // @description  Augments GitLab search with filter UI, full pagination, and export
 // @match        *://*/-/search*
 // @include      /\/search\?/
@@ -19,6 +19,25 @@
     if (groupMatch) return `/api/v4/groups/${groupMatch[1]}/search`;
     if (projectId !== null) return `/api/v4/projects/${projectId}/search`;
     return "/api/v4/search";
+  }
+  function buildApiQuery(rawQuery, filename, extension) {
+    const parts = [rawQuery.trim()];
+    if (filename.trim()) parts.push(`filename:${filename.trim()}`);
+    const exts = parseExtensions(extension);
+    if (exts.length === 1) parts.push(`extension:${exts[0]}`);
+    return parts.filter(Boolean).join(" ");
+  }
+  function uniqueFiles(results) {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const r of results) {
+      const key = `${r.project_id}:${r.path}:${r.ref}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(r);
+      }
+    }
+    return out;
   }
   function parseExtensions(raw) {
     return raw.split(/[,\s]+/).map((e) => e.trim().replace(/^\./, "").toLowerCase()).filter(Boolean);
@@ -52,9 +71,29 @@
     const rows = results.map((r) => cols.map((c) => esc(r[c])).join(","));
     return [cols.join(","), ...rows].join("\n");
   }
+  function toCsvDeep(matches) {
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const header = "project_id,project_path,path,filename,ref,lineNum,text";
+    const rows = [];
+    for (const { result: r, lines } of matches) {
+      for (const { lineNum, text } of lines) {
+        rows.push([
+          esc(r.project_id),
+          esc(r.project_path),
+          esc(r.path),
+          esc(r.filename),
+          esc(r.ref),
+          esc(lineNum),
+          esc(text)
+        ].join(","));
+      }
+    }
+    return [header, ...rows].join("\n");
+  }
 
   // src/api.ts
   var CONCURRENCY = 5;
+  var DEEP_CONCURRENCY = 3;
   var projectPathCache = /* @__PURE__ */ new Map();
   async function resolveProjectPath(id) {
     if (projectPathCache.has(id)) return projectPathCache.get(id);
@@ -128,6 +167,44 @@
     }
     return all;
   }
+  async function fetchFileRaw(projectId, filePath, ref) {
+    try {
+      const url = `/api/v4/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`;
+      const resp = await fetch(url, { credentials: "include", headers: { Accept: "text/plain" } });
+      if (!resp.ok) return null;
+      return await resp.text();
+    } catch {
+      return null;
+    }
+  }
+  async function deepSearchFiles(files, query, { onProgress }) {
+    const total = files.length;
+    let done = 0;
+    const matches = [];
+    const q = query.toLowerCase();
+    for (let i = 0; i < files.length; i += DEEP_CONCURRENCY) {
+      const chunk = files.slice(i, i + DEEP_CONCURRENCY);
+      await Promise.allSettled(
+        chunk.map(async (r) => {
+          if (r.project_id === null) {
+            done++;
+            onProgress(done, total, matches.length);
+            return;
+          }
+          const content = await fetchFileRaw(r.project_id, r.path, r.ref);
+          done++;
+          if (!content) {
+            onProgress(done, total, matches.length);
+            return;
+          }
+          const lines = content.split("\n").map((text, idx) => ({ lineNum: idx + 1, text })).filter(({ text }) => text.toLowerCase().includes(q));
+          if (lines.length > 0) matches.push({ result: r, lines });
+          onProgress(done, total, matches.length);
+        })
+      );
+    }
+    return matches;
+  }
 
   // src/ui.ts
   var VAR = {
@@ -196,8 +273,9 @@
       t = setTimeout(() => fn(...args), ms);
     };
   }
-  function createPanel(initialQuery, onFetch) {
+  function createPanel(initialQuery, onFetch, onDeepSearch) {
     let allResults = [];
+    let deepResults = null;
     let hasFetched = false;
     const root = div([
       BASE_FONT,
@@ -228,12 +306,18 @@
       "display:flex",
       "gap:8px",
       "align-items:center",
+      "flex-wrap:wrap",
       `border-bottom:1px solid ${VAR.border}`
     ].join(";"));
-    const queryInput = mkInput("Search query \u2014 supports extension:js  filename:*.ts  path:src", true);
+    const queryInput = mkInput("Search query (GitLab syntax: extension:js  filename:*.ts  path:src)", true);
     queryInput.value = initialQuery;
+    queryInput.style.minWidth = "200px";
+    const filenameInput = mkInput("Filename");
+    filenameInput.style.width = "160px";
+    const extInput = mkInput("Extension: ts, js\u2026");
+    extInput.style.width = "130px";
     const fetchBtn = mkBtn("Fetch All", () => {
-      const q = queryInput.value.trim();
+      const q = buildApiQuery(queryInput.value.trim(), filenameInput.value.trim(), extInput.value);
       if (q) onFetch(q);
     }, true);
     queryInput.addEventListener("keydown", (e) => {
@@ -243,24 +327,7 @@
         fetchBtn.click();
       }
     });
-    fetchBar.append(queryInput, fetchBtn);
-    const filterBar = div([
-      "padding:8px 14px",
-      "display:flex",
-      "gap:8px",
-      "align-items:center",
-      "flex-wrap:wrap",
-      `border-bottom:1px solid ${VAR.border}`
-    ].join(";"));
-    const filterInput = mkInput("Filter loaded results\u2026", true);
-    const extInput = mkInput("Extensions: js, ts, py\u2026");
-    extInput.style.width = "150px";
-    const hint = document.createElement("span");
-    hint.textContent = `\u2139 Searches paths and code snippets literally after loading \u2014 finds "hello-world" even if GitLab's tokenised index split it at the hyphen`;
-    hint.style.cssText = `font-size:11px;color:${VAR.textMuted};flex-basis:100%;margin-top:2px;`;
-    filterInput.addEventListener("input", debounce(refilter, 200));
-    extInput.addEventListener("input", debounce(refilter, 200));
-    filterBar.append(mkLabel("Filter:"), filterInput, mkLabel("Ext:"), extInput, hint);
+    fetchBar.append(queryInput, mkLabel("File:"), filenameInput, mkLabel("Ext:"), extInput, fetchBtn);
     const statusRow = div([
       "padding:6px 14px",
       "display:flex",
@@ -274,11 +341,11 @@
     const countSpan = document.createElement("span");
     countSpan.style.color = VAR.textMuted;
     countSpan.textContent = "Enter a query above and click Fetch All.";
-    const toolRow = div("display:flex;gap:6px;flex-wrap:wrap;");
+    const toolRow = div("display:flex;gap:6px;flex-wrap:wrap;align-items:center;");
     const copyBtn = mkBtn("Copy repos", async () => {
-      const repos = extractRepoPaths(getVisible()).join("\n");
+      const repos = deepResults !== null ? [...new Set(deepResults.map((m) => m.result.project_path).filter(Boolean))].sort() : extractRepoPaths(getVisible());
       try {
-        await navigator.clipboard.writeText(repos);
+        await navigator.clipboard.writeText(repos.join("\n"));
         const orig = copyBtn.textContent;
         copyBtn.textContent = "Copied!";
         setTimeout(() => {
@@ -294,7 +361,7 @@
     const divEl = div(`width:1px;background:${VAR.border};margin:2px 0;flex-shrink:0;`);
     toolRow.append(
       mkBtn("Expand all", () => {
-        list.querySelectorAll(".gcs-snippet").forEach((el) => {
+        list.querySelectorAll(".gcs-chevron-content").forEach((el) => {
           el.style.display = "block";
         });
         list.querySelectorAll(".gcs-chevron").forEach((el) => {
@@ -302,7 +369,7 @@
         });
       }),
       mkBtn("Collapse all", () => {
-        list.querySelectorAll(".gcs-snippet").forEach((el) => {
+        list.querySelectorAll(".gcs-chevron-content").forEach((el) => {
           el.style.display = "none";
         });
         list.querySelectorAll(".gcs-chevron").forEach((el) => {
@@ -311,43 +378,114 @@
       }),
       divEl,
       mkBtn("Export JSON", () => {
-        triggerDownload(JSON.stringify(getVisible(), null, 2), "application/json", "json", queryInput.value);
+        const content = deepResults !== null ? JSON.stringify(deepResults.map((m) => ({ ...m.result, matches: m.lines })), null, 2) : JSON.stringify(getVisible(), null, 2);
+        triggerDownload(content, "application/json", "json", queryInput.value);
       }),
       mkBtn("Export CSV", () => {
-        triggerDownload(toCsv(getVisible()), "text/csv", "csv", queryInput.value);
+        const content = deepResults !== null ? toCsvDeep(deepResults) : toCsv(getVisible());
+        triggerDownload(content, "text/csv", "csv", queryInput.value);
       }),
       copyBtn
     );
     statusRow.append(countSpan, toolRow);
     const list = div("");
     list.id = "gcs-list";
-    root.append(titleBar, fetchBar, filterBar, statusRow, list);
+    const deepSection = div([
+      `border-top:1px solid ${VAR.border}`,
+      "padding:10px 14px",
+      "display:none"
+    ].join(";"));
+    const deepTitle = mkLabel("Deep content search");
+    deepTitle.style.cssText += ";display:block;margin-bottom:8px;font-size:12px;";
+    const deepInputRow = div("display:flex;gap:8px;align-items:center;");
+    const deepInput = mkInput('Literal string \u2014 e.g. "tanstack-hello": "^1.0.0"', true);
+    const deepBtn = mkBtn("Search", handleDeepClick);
+    deepInputRow.append(deepInput, deepBtn);
+    deepInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        deepBtn.click();
+      }
+    });
+    const warningRow = div("display:none;");
+    const deepHint = document.createElement("p");
+    deepHint.style.cssText = `margin:6px 0 0;font-size:11px;color:${VAR.textMuted};`;
+    deepHint.textContent = `\u2139 Fetches full file content for each result \u2014 finds literal matches that GitLab's tokenised index splits (e.g. hello-world, "pkg": "^1.0").`;
+    deepSection.append(deepTitle, deepInputRow, warningRow, deepHint);
+    root.append(titleBar, fetchBar, statusRow, list, deepSection);
     function getVisible() {
-      return filterResults(allResults, filterInput.value, parseExtensions(extInput.value));
+      return filterResults(allResults, "", parseExtensions(extInput.value));
     }
-    function renderList(results) {
+    function renderApiList(results) {
       list.innerHTML = "";
       const frag = document.createDocumentFragment();
       for (const r of results) frag.appendChild(renderCard(r));
       list.appendChild(frag);
     }
+    function renderDeepList(matches) {
+      list.innerHTML = "";
+      if (matches.length === 0) {
+        const empty = div(`padding:16px;text-align:center;color:${VAR.textMuted};font-size:13px;`);
+        empty.textContent = "No matches found in full file content.";
+        list.appendChild(empty);
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const m of matches) frag.appendChild(renderDeepCard(m));
+      list.appendChild(frag);
+    }
     function updateCount() {
-      const visible = getVisible();
       if (!hasFetched) {
         countSpan.textContent = "Enter a query above and click Fetch All.";
       } else if (allResults.length === 0) {
         countSpan.textContent = "No results found.";
-      } else if (visible.length === allResults.length) {
-        countSpan.textContent = `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? "s" : ""}`;
       } else {
-        countSpan.textContent = `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (filtered)`;
+        const visible = getVisible();
+        countSpan.textContent = visible.length === allResults.length ? `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? "s" : ""}` : `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (ext filter active)`;
       }
       countSpan.style.color = VAR.textMuted;
     }
-    function refilter() {
-      if (!hasFetched) return;
-      renderList(getVisible());
+    extInput.addEventListener("input", debounce(() => {
+      if (!hasFetched || deepResults !== null) return;
+      renderApiList(getVisible());
       updateCount();
+    }, 300));
+    function handleDeepClick() {
+      const q = deepInput.value.trim();
+      if (!q) return;
+      const files = uniqueFiles(allResults).filter((r) => r.project_id !== null);
+      if (files.length === 0) return;
+      if (files.length > 500) {
+        showDeepWarning(files.length, () => startDeep(files, q));
+      } else {
+        startDeep(files, q);
+      }
+    }
+    function showDeepWarning(fileCount, proceed) {
+      deepInputRow.style.display = "none";
+      warningRow.style.display = "flex";
+      warningRow.style.cssText += ";gap:8px;align-items:center;flex-wrap:wrap;";
+      warningRow.innerHTML = "";
+      const msg = document.createElement("span");
+      msg.style.cssText = `font-size:12px;color:${VAR.danger};`;
+      msg.textContent = `\u26A0 This will fetch ${fileCount.toLocaleString()} files \u2014 large files (e.g. package-lock.json) can be several MB each. Proceed?`;
+      const proceedBtn = mkBtn("Proceed", () => {
+        resetDeepWarning();
+        proceed();
+      });
+      const cancelBtn = mkBtn("Cancel", resetDeepWarning);
+      warningRow.append(msg, proceedBtn, cancelBtn);
+    }
+    function resetDeepWarning() {
+      warningRow.style.display = "none";
+      warningRow.innerHTML = "";
+      deepInputRow.style.display = "flex";
+    }
+    function startDeep(files, q) {
+      deepResults = null;
+      deepBtn.disabled = true;
+      onDeepSearch(files, q);
     }
     return {
       el: root,
@@ -358,26 +496,61 @@
       },
       setResults(results) {
         hasFetched = true;
+        deepResults = null;
+        deepBtn.disabled = false;
         allResults = results;
-        renderList(getVisible());
+        renderApiList(getVisible());
         updateCount();
+        deepSection.style.display = results.length > 0 ? "block" : "none";
       },
       setError(msg) {
         countSpan.textContent = msg;
         countSpan.style.color = VAR.danger;
         list.innerHTML = "";
+        deepSection.style.display = "none";
       },
       clear() {
         hasFetched = false;
+        deepResults = null;
         allResults = [];
         list.innerHTML = "";
+        deepSection.style.display = "none";
+        resetDeepWarning();
+        deepBtn.disabled = false;
         updateCount();
+      },
+      setDeepProgress(done, total, matchCount) {
+        countSpan.textContent = `Deep search: ${done.toLocaleString()} / ${total.toLocaleString()} files fetched \xB7 ${matchCount} match${matchCount !== 1 ? "es" : ""} so far`;
+        countSpan.style.color = VAR.textMuted;
+      },
+      setDeepResults(matches) {
+        deepResults = matches;
+        deepBtn.disabled = false;
+        renderDeepList(matches);
+        const cleared = div("display:flex;gap:8px;align-items:center;margin-top:8px;");
+        const summary = document.createElement("span");
+        summary.style.cssText = `font-size:12px;color:${VAR.textMuted};`;
+        summary.textContent = `Found in ${matches.length} file${matches.length !== 1 ? "s" : ""}.`;
+        const clearBtn = mkBtn("Clear \u2014 back to API results", () => {
+          deepResults = null;
+          deepBtn.disabled = false;
+          renderApiList(getVisible());
+          updateCount();
+          cleared.remove();
+          deepInputRow.style.display = "flex";
+        });
+        cleared.append(summary, clearBtn);
+        deepInputRow.style.display = "none";
+        deepSection.insertBefore(cleared, deepHint);
+      },
+      setDeepError(msg) {
+        deepBtn.disabled = false;
+        countSpan.textContent = msg;
+        countSpan.style.color = VAR.danger;
       }
     };
   }
-  function renderCard(result) {
-    const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
-    card.className = "gcs-card";
+  function cardHeader(result) {
     const header = div([
       "display:flex",
       "align-items:baseline",
@@ -409,14 +582,26 @@
     });
     link.addEventListener("click", (e) => e.stopPropagation());
     meta.appendChild(link);
+    return { header: (header.append(chevron, meta), header), chevron };
+  }
+  function toggleOnClick(header, chevron, content) {
+    header.addEventListener("click", () => {
+      const open = content.style.display !== "none";
+      content.style.display = open ? "none" : "block";
+      chevron.style.transform = open ? "" : "rotate(90deg)";
+    });
+  }
+  function renderCard(result) {
+    const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
+    card.className = "gcs-card";
+    const { header, chevron } = cardHeader(result);
     const ref = document.createElement("span");
     ref.textContent = ` \xB7 ${result.ref}`;
     ref.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
-    meta.appendChild(ref);
-    header.append(chevron, meta);
+    header.appendChild(ref);
     card.appendChild(header);
     const snippet = document.createElement("pre");
-    snippet.className = "gcs-snippet";
+    snippet.className = "gcs-chevron-content";
     snippet.style.cssText = [
       "display:none",
       "margin:0",
@@ -433,11 +618,39 @@
       snippet.textContent = lineHint + result.data.slice(0, 800);
     }
     card.appendChild(snippet);
-    header.addEventListener("click", () => {
-      const open = snippet.style.display !== "none";
-      snippet.style.display = open ? "none" : "block";
-      chevron.style.transform = open ? "" : "rotate(90deg)";
-    });
+    toggleOnClick(header, chevron, snippet);
+    return card;
+  }
+  function renderDeepCard(match) {
+    const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
+    const { header, chevron } = cardHeader(match.result);
+    const refAndCount = document.createElement("span");
+    refAndCount.textContent = ` \xB7 ${match.result.ref} \xB7 ${match.lines.length} match${match.lines.length !== 1 ? "es" : ""}`;
+    refAndCount.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
+    header.appendChild(refAndCount);
+    card.appendChild(header);
+    const linesDiv = div([
+      "display:none",
+      "padding:4px 14px 10px 30px",
+      `background:${VAR.bgSubtle}`,
+      'font:12px/1.6 "SFMono-Regular",Consolas,monospace',
+      "overflow:auto",
+      "max-height:300px"
+    ].join(";"));
+    linesDiv.className = "gcs-chevron-content";
+    for (const { lineNum, text } of match.lines) {
+      const row = div("display:flex;gap:12px;");
+      const num = document.createElement("span");
+      num.textContent = String(lineNum);
+      num.style.cssText = `color:${VAR.textMuted};user-select:none;min-width:40px;text-align:right;flex-shrink:0;`;
+      const txt = document.createElement("span");
+      txt.textContent = text.trim();
+      txt.style.cssText = "overflow:auto;white-space:pre;";
+      row.append(num, txt);
+      linesDiv.appendChild(row);
+    }
+    card.appendChild(linesDiv);
+    toggleOnClick(header, chevron, linesDiv);
     return card;
   }
   function triggerDownload(content, mimeType, ext, query) {
@@ -515,6 +728,18 @@
       handleError(err);
     }
   }
+  async function runDeepSearch(panel, files, query) {
+    try {
+      const matches = await deepSearchFiles(files, query, {
+        onProgress(done, total, matchCount) {
+          panel.setDeepProgress(done, total, matchCount);
+        }
+      });
+      panel.setDeepResults(matches);
+    } catch (err) {
+      panel.setDeepError(`Deep search failed: ${err.message}`);
+    }
+  }
   var activePanel = null;
   function injectTrigger() {
     if (document.getElementById("gcs-trigger")) return;
@@ -540,9 +765,15 @@
   function activate() {
     document.getElementById("gcs-trigger")?.remove();
     hideNativeResults();
-    const panel = createPanel(getNativeQuery(), (query) => {
-      void runSearch(panel, query);
-    });
+    const panel = createPanel(
+      getNativeQuery(),
+      (query) => {
+        void runSearch(panel, query);
+      },
+      (files, query) => {
+        void runDeepSearch(panel, files, query);
+      }
+    );
     panel.closeBtn.addEventListener("click", deactivate);
     const point = findInjectionPoint();
     if (point) point.insertBefore(panel.el, point.firstChild);

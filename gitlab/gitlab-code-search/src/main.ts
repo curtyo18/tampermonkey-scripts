@@ -1,6 +1,6 @@
 import type { ApiError, SearchResult } from './types.js';
 import { resolveApiEndpoint } from './utils.js';
-import { fetchAllPages, resolveProjectPaths } from './api.js';
+import { fetchAllPages, resolveProjectPaths, deepSearchFiles } from './api.js';
 import { createPanel } from './ui.js';
 import type { PanelHandle } from './ui.js';
 
@@ -83,6 +83,19 @@ async function runSearch(panel: PanelHandle, query: string): Promise<void> {
   }
 }
 
+async function runDeepSearch(panel: PanelHandle, files: SearchResult[], query: string): Promise<void> {
+  try {
+    const matches = await deepSearchFiles(files, query, {
+      onProgress(done, total, matchCount) {
+        panel.setDeepProgress(done, total, matchCount);
+      },
+    });
+    panel.setDeepResults(matches);
+  } catch (err) {
+    panel.setDeepError(`Deep search failed: ${(err as Error).message}`);
+  }
+}
+
 // ── Trigger button ────────────────────────────────────────────────────────────
 
 let activePanel: PanelHandle | null = null;
@@ -116,7 +129,11 @@ function activate(): void {
   document.getElementById('gcs-trigger')?.remove();
   hideNativeResults();
 
-  const panel = createPanel(getNativeQuery(), query => { void runSearch(panel, query); });
+  const panel = createPanel(
+    getNativeQuery(),
+    query => { void runSearch(panel, query); },
+    (files, query) => { void runDeepSearch(panel, files, query); },
+  );
   panel.closeBtn.addEventListener('click', deactivate);
 
   const point = findInjectionPoint();

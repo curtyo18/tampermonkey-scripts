@@ -1,6 +1,7 @@
-import type { PageResult, FetchCallbacks, SearchResult, ApiError } from './types.js';
+import type { PageResult, FetchCallbacks, SearchResult, ApiError, DeepMatch } from './types.js';
 
 const CONCURRENCY = 5;
+const DEEP_CONCURRENCY = 3; // gentler rate for full-file fetches
 
 // ── Project path resolution ───────────────────────────────────────────
 
@@ -87,4 +88,62 @@ export async function fetchAllPages(
   } catch { /* quota exceeded */ }
 
   return all;
+}
+
+// ── Deep content search ───────────────────────────────────────────────
+
+/** Fetch a file's raw content via the repository files API. Returns null on failure. */
+export async function fetchFileRaw(
+  projectId: number,
+  filePath: string,
+  ref: string,
+): Promise<string | null> {
+  try {
+    const url = `/api/v4/projects/${projectId}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`;
+    const resp = await fetch(url, { credentials: 'include', headers: { Accept: 'text/plain' } });
+    if (!resp.ok) return null;
+    return await resp.text();
+  } catch {
+    return null;
+  }
+}
+
+export interface DeepSearchCallbacks {
+  onProgress(done: number, total: number, matchCount: number): void;
+}
+
+/**
+ * Fetch the raw content of each file in `files` and find lines containing
+ * `query` (case-insensitive literal match). Results are streamed back via
+ * onProgress and returned as an array of DeepMatch once complete.
+ */
+export async function deepSearchFiles(
+  files: SearchResult[],
+  query: string,
+  { onProgress }: DeepSearchCallbacks,
+): Promise<DeepMatch[]> {
+  const total = files.length;
+  let done = 0;
+  const matches: DeepMatch[] = [];
+  const q = query.toLowerCase();
+
+  for (let i = 0; i < files.length; i += DEEP_CONCURRENCY) {
+    const chunk = files.slice(i, i + DEEP_CONCURRENCY);
+    await Promise.allSettled(
+      chunk.map(async r => {
+        if (r.project_id === null) { done++; onProgress(done, total, matches.length); return; }
+        const content = await fetchFileRaw(r.project_id, r.path, r.ref);
+        done++;
+        if (!content) { onProgress(done, total, matches.length); return; }
+        const lines = content
+          .split('\n')
+          .map((text, idx) => ({ lineNum: idx + 1, text }))
+          .filter(({ text }) => text.toLowerCase().includes(q));
+        if (lines.length > 0) matches.push({ result: r, lines });
+        onProgress(done, total, matches.length);
+      }),
+    );
+  }
+
+  return matches;
 }
