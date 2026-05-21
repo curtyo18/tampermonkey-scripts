@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLab Code Search+
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.3.0
+// @version      1.4.0
 // @description  Augments GitLab search with filter UI, full pagination, and export
 // @match        *://*/-/search*
 // @include      /\/search\?/
