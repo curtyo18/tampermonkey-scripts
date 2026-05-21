@@ -2,9 +2,6 @@ import { buildApiQuery, filterResults, parseExtensions, extractRepoPaths, toCsv,
 import type { SearchResult, DeepMatch } from './types.js';
 
 // ── CSS helpers ───────────────────────────────────────────────────────────────
-// System colour keywords (Canvas/CanvasText/ButtonBorder/GrayText) adapt to
-// OS dark-mode automatically and work on every browser, regardless of whether
-// the GitLab CSS custom properties are defined on the running instance.
 
 const VAR = {
   bg:        'var(--gl-background-color-default, Canvas)',
@@ -29,7 +26,6 @@ function mkInput(placeholder: string, flex?: boolean): HTMLInputElement {
   const inp = document.createElement('input');
   inp.type = 'text';
   inp.placeholder = placeholder;
-  // stopPropagation prevents an ancestor GitLab <form> capturing Enter
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') e.stopPropagation(); });
   inp.style.cssText = [
     'padding:4px 8px',
@@ -193,11 +189,11 @@ export function createPanel(
 
   toolRow.append(
     mkBtn('Expand all', () => {
-      list.querySelectorAll<HTMLElement>('.gcs-chevron-content').forEach(el => { el.style.display = 'block'; });
+      list.querySelectorAll<HTMLElement>('.gcs-collapsible').forEach(el => { el.style.display = 'block'; });
       list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = 'rotate(90deg)'; });
     }),
     mkBtn('Collapse all', () => {
-      list.querySelectorAll<HTMLElement>('.gcs-chevron-content').forEach(el => { el.style.display = 'none'; });
+      list.querySelectorAll<HTMLElement>('.gcs-collapsible').forEach(el => { el.style.display = 'none'; });
       list.querySelectorAll<HTMLElement>('.gcs-chevron').forEach(el => { el.style.transform = ''; });
     }),
     divEl,
@@ -208,9 +204,7 @@ export function createPanel(
       triggerDownload(content, 'application/json', 'json', queryInput.value);
     }),
     mkBtn('Export CSV', () => {
-      const content = deepResults !== null
-        ? toCsvDeep(deepResults)
-        : toCsv(getVisible());
+      const content = deepResults !== null ? toCsvDeep(deepResults) : toCsv(getVisible());
       triggerDownload(content, 'text/csv', 'csv', queryInput.value);
     }),
     copyBtn,
@@ -241,7 +235,6 @@ export function createPanel(
     if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); deepBtn.click(); }
   });
 
-  // Warning row (hidden by default)
   const warningRow = div('display:none;');
 
   const deepHint = document.createElement('p');
@@ -252,7 +245,7 @@ export function createPanel(
 
   root.append(titleBar, fetchBar, statusRow, list, deepSection);
 
-  // ── Internal helpers ──────────────────────────────────────────────────────
+  // ── Internal ──────────────────────────────────────────────────────────────
 
   function getVisible(): SearchResult[] {
     return filterResults(allResults, '', parseExtensions(extInput.value));
@@ -260,8 +253,10 @@ export function createPanel(
 
   function renderApiList(results: SearchResult[]): void {
     list.innerHTML = '';
+    if (results.length === 0) return;
+    const grouped = groupByRepo(results);
     const frag = document.createDocumentFragment();
-    for (const r of results) frag.appendChild(renderCard(r));
+    for (const [repo, items] of grouped) frag.appendChild(renderRepoGroup(repo, items));
     list.appendChild(frag);
   }
 
@@ -273,8 +268,9 @@ export function createPanel(
       list.appendChild(empty);
       return;
     }
+    const grouped = groupDeepByRepo(matches);
     const frag = document.createDocumentFragment();
-    for (const m of matches) frag.appendChild(renderDeepCard(m));
+    for (const [repo, items] of grouped) frag.appendChild(renderDeepRepoGroup(repo, items));
     list.appendChild(frag);
   }
 
@@ -285,14 +281,14 @@ export function createPanel(
       countSpan.textContent = 'No results found.';
     } else {
       const visible = getVisible();
+      const repoCount = groupByRepo(visible).size;
       countSpan.textContent = visible.length === allResults.length
-        ? `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? 's' : ''}`
-        : `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results (ext filter active)`;
+        ? `${allResults.length.toLocaleString()} result${allResults.length !== 1 ? 's' : ''} across ${repoCount} repo${repoCount !== 1 ? 's' : ''}`
+        : `${visible.length.toLocaleString()} of ${allResults.length.toLocaleString()} results across ${repoCount} repo${repoCount !== 1 ? 's' : ''} (ext filter active)`;
     }
     countSpan.style.color = VAR.textMuted;
   }
 
-  // Extension filter: re-render API results when ext field changes (no deep search effect)
   extInput.addEventListener('input', debounce(() => {
     if (!hasFetched || deepResults !== null) return;
     renderApiList(getVisible());
@@ -304,7 +300,6 @@ export function createPanel(
     if (!q) return;
     const files = uniqueFiles(allResults).filter(r => r.project_id !== null);
     if (files.length === 0) return;
-
     if (files.length > 500) {
       showDeepWarning(files.length, () => startDeep(files, q));
     } else {
@@ -315,14 +310,14 @@ export function createPanel(
   function showDeepWarning(fileCount: number, proceed: () => void): void {
     deepInputRow.style.display = 'none';
     warningRow.style.display = 'flex';
-    warningRow.style.cssText += ';gap:8px;align-items:center;flex-wrap:wrap;';
+    warningRow.style.gap = '8px';
+    warningRow.style.alignItems = 'center';
+    warningRow.style.flexWrap = 'wrap';
     warningRow.innerHTML = '';
     const msg = document.createElement('span');
     msg.style.cssText = `font-size:12px;color:${VAR.danger};`;
     msg.textContent = `⚠ This will fetch ${fileCount.toLocaleString()} files — large files (e.g. package-lock.json) can be several MB each. Proceed?`;
-    const proceedBtn = mkBtn('Proceed', () => { resetDeepWarning(); proceed(); });
-    const cancelBtn  = mkBtn('Cancel',  resetDeepWarning);
-    warningRow.append(msg, proceedBtn, cancelBtn);
+    warningRow.append(msg, mkBtn('Proceed', () => { resetDeepWarning(); proceed(); }), mkBtn('Cancel', resetDeepWarning));
   }
 
   function resetDeepWarning(): void {
@@ -353,7 +348,6 @@ export function createPanel(
       allResults = results;
       renderApiList(getVisible());
       updateCount();
-      // Show deep search section when there are results to search
       deepSection.style.display = results.length > 0 ? 'block' : 'none';
     },
 
@@ -384,10 +378,12 @@ export function createPanel(
       deepResults = matches;
       deepBtn.disabled = false;
       renderDeepList(matches);
+
       const cleared = div('display:flex;gap:8px;align-items:center;margin-top:8px;');
       const summary = document.createElement('span');
       summary.style.cssText = `font-size:12px;color:${VAR.textMuted};`;
-      summary.textContent = `Found in ${matches.length} file${matches.length !== 1 ? 's' : ''}.`;
+      const totalLines = matches.reduce((s, m) => s + m.lines.length, 0);
+      summary.textContent = `Found in ${matches.length} file${matches.length !== 1 ? 's' : ''} (${totalLines} matching line${totalLines !== 1 ? 's' : ''}).`;
       const clearBtn = mkBtn('Clear — back to API results', () => {
         deepResults = null;
         deepBtn.disabled = false;
@@ -409,16 +405,37 @@ export function createPanel(
   };
 }
 
-// ── Card renderers ────────────────────────────────────────────────────────────
+// ── Grouping ──────────────────────────────────────────────────────────────────
 
-function cardHeader(result: SearchResult): { header: HTMLDivElement; chevron: HTMLSpanElement } {
+function groupByRepo(results: SearchResult[]): Map<string, SearchResult[]> {
+  const groups = new Map<string, SearchResult[]>();
+  for (const r of results) {
+    const key = r.project_path ?? `(project ${r.project_id})`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  return groups;
+}
+
+function groupDeepByRepo(matches: DeepMatch[]): Map<string, DeepMatch[]> {
+  const groups = new Map<string, DeepMatch[]>();
+  for (const m of matches) {
+    const key = m.result.project_path ?? `(project ${m.result.project_id})`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(m);
+  }
+  return groups;
+}
+
+// ── Repo group renderers ──────────────────────────────────────────────────────
+
+function repoGroupHeader(repoPath: string, summary: string): { group: HTMLDivElement; content: HTMLDivElement } {
+  const group = div(`border-bottom:1px solid ${VAR.border};`);
+
   const header = div([
-    'display:flex',
-    'align-items:baseline',
-    'gap:6px',
-    'padding:8px 14px',
-    'cursor:pointer',
-    'user-select:none',
+    'display:flex', 'align-items:center', 'gap:8px',
+    'padding:7px 14px', 'cursor:pointer', 'user-select:none',
+    `background:${VAR.bgSubtle}`,
   ].join(';'));
 
   const chevron = document.createElement('span');
@@ -426,92 +443,146 @@ function cardHeader(result: SearchResult): { header: HTMLDivElement; chevron: HT
   chevron.textContent = '▶';
   chevron.style.cssText = `font-size:9px;color:${VAR.textMuted};flex-shrink:0;transition:transform .12s;`;
 
-  const meta = div('flex:1;min-width:0;');
+  const repoLink = document.createElement('a');
+  repoLink.href = `${location.origin}/${repoPath}`;
+  repoLink.textContent = repoPath;
+  repoLink.style.cssText = `color:${VAR.textLink};font-weight:600;font-size:13px;text-decoration:none;word-break:break-all;flex:1;`;
+  repoLink.addEventListener('mouseenter', () => { repoLink.style.textDecoration = 'underline'; });
+  repoLink.addEventListener('mouseleave', () => { repoLink.style.textDecoration = 'none'; });
+  repoLink.addEventListener('click', e => e.stopPropagation());
 
-  if (result.project_path) {
-    const repo = document.createElement('span');
-    repo.textContent = result.project_path + ' · ';
-    repo.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
-    meta.appendChild(repo);
-  }
+  const badge = document.createElement('span');
+  badge.textContent = summary;
+  badge.style.cssText = `font-size:11px;color:${VAR.textMuted};white-space:nowrap;flex-shrink:0;`;
 
-  const link = document.createElement('a');
-  link.href = result.project_path
-    ? `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`
-    : `${location.origin}/${result.path}`;
-  link.textContent = result.path;
-  link.style.cssText = `color:${VAR.textLink};text-decoration:none;font-weight:500;word-break:break-all;`;
-  link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
-  link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
-  link.addEventListener('click', e => e.stopPropagation());
-  meta.appendChild(link);
+  header.append(chevron, repoLink, badge);
 
-  return { header: (header.append(chevron, meta), header), chevron };
+  const content = div('display:none;');
+  content.className = 'gcs-collapsible';
+
+  group.append(header, content);
+  header.addEventListener('click', () => {
+    const open = content.style.display !== 'none';
+    content.style.display = open ? 'none' : 'block';
+    chevron.style.transform = open ? '' : 'rotate(90deg)';
+  });
+
+  return { group, content };
 }
 
-function toggleOnClick(header: HTMLElement, chevron: HTMLSpanElement, content: HTMLElement): void {
-  header.addEventListener('click', () => {
+function renderRepoGroup(repoPath: string, results: SearchResult[]): HTMLDivElement {
+  const summary = `${results.length} result${results.length !== 1 ? 's' : ''}`;
+  const { group, content } = repoGroupHeader(repoPath, summary);
+  for (const r of results) content.appendChild(renderFileCard(r));
+  return group;
+}
+
+function renderDeepRepoGroup(repoPath: string, matches: DeepMatch[]): HTMLDivElement {
+  const totalLines = matches.reduce((s, m) => s + m.lines.length, 0);
+  const summary = `${matches.length} file${matches.length !== 1 ? 's' : ''} · ${totalLines} match${totalLines !== 1 ? 'es' : ''}`;
+  const { group, content } = repoGroupHeader(repoPath, summary);
+  for (const m of matches) content.appendChild(renderDeepFileCard(m));
+  return group;
+}
+
+// ── File card renderers (indented, inside a repo group) ───────────────────────
+
+function toggleCollapsible(trigger: HTMLElement, chevron: HTMLSpanElement, content: HTMLElement): void {
+  trigger.addEventListener('click', () => {
     const open = content.style.display !== 'none';
     content.style.display = open ? 'none' : 'block';
     chevron.style.transform = open ? '' : 'rotate(90deg)';
   });
 }
 
-function renderCard(result: SearchResult): HTMLDivElement {
-  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
-  card.className = 'gcs-card';
+function renderFileCard(result: SearchResult): HTMLDivElement {
+  const card = div(`border-top:1px solid ${VAR.border};${BASE_FONT}`);
 
-  const { header, chevron } = cardHeader(result);
+  const header = div([
+    'display:flex', 'align-items:baseline', 'gap:6px',
+    'padding:6px 14px 6px 28px',
+    'cursor:pointer', 'user-select:none',
+  ].join(';'));
+
+  const chevron = document.createElement('span');
+  chevron.className = 'gcs-chevron';
+  chevron.textContent = '▶';
+  chevron.style.cssText = `font-size:9px;color:${VAR.textMuted};flex-shrink:0;transition:transform .12s;`;
+
+  const link = document.createElement('a');
+  link.href = result.project_path
+    ? `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`
+    : `${location.origin}/${result.path}`;
+  link.textContent = result.path;
+  link.style.cssText = `color:${VAR.textLink};text-decoration:none;font-weight:500;word-break:break-all;flex:1;min-width:0;`;
+  link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
+  link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+  link.addEventListener('click', e => e.stopPropagation());
 
   const ref = document.createElement('span');
-  ref.textContent = ` · ${result.ref}`;
-  ref.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
-  header.appendChild(ref);
+  ref.textContent = result.ref;
+  ref.style.cssText = `font-size:11px;color:${VAR.textMuted};white-space:nowrap;flex-shrink:0;`;
 
+  header.append(chevron, link, ref);
   card.appendChild(header);
 
   const snippet = document.createElement('pre');
-  snippet.className = 'gcs-chevron-content';
+  snippet.className = 'gcs-collapsible';
   snippet.style.cssText = [
-    'display:none',
-    'margin:0',
-    'padding:8px 14px 10px 30px',
+    'display:none', 'margin:0',
+    'padding:8px 14px 10px 42px',
     `background:${VAR.bgSubtle}`,
     'overflow:auto',
     'font:12px/1.4 "SFMono-Regular",Consolas,monospace',
-    'white-space:pre-wrap',
-    'word-break:break-all',
-    'max-height:200px',
+    'white-space:pre-wrap', 'word-break:break-all', 'max-height:200px',
   ].join(';');
   if (result.data) {
-    const lineHint = result.startline ? `Line ${result.startline}: ` : '';
-    snippet.textContent = lineHint + result.data.slice(0, 800);
+    snippet.textContent = (result.startline ? `Line ${result.startline}: ` : '') + result.data.slice(0, 800);
   }
   card.appendChild(snippet);
-  toggleOnClick(header, chevron, snippet);
+  toggleCollapsible(header, chevron, snippet);
   return card;
 }
 
-function renderDeepCard(match: DeepMatch): HTMLDivElement {
-  const card = div(`border-bottom:1px solid ${VAR.border};${BASE_FONT}`);
+function renderDeepFileCard(match: DeepMatch): HTMLDivElement {
+  const card = div(`border-top:1px solid ${VAR.border};${BASE_FONT}`);
 
-  const { header, chevron } = cardHeader(match.result);
+  const header = div([
+    'display:flex', 'align-items:baseline', 'gap:6px',
+    'padding:6px 14px 6px 28px',
+    'cursor:pointer', 'user-select:none',
+  ].join(';'));
 
-  const refAndCount = document.createElement('span');
-  refAndCount.textContent = ` · ${match.result.ref} · ${match.lines.length} match${match.lines.length !== 1 ? 'es' : ''}`;
-  refAndCount.style.cssText = `font-size:11px;color:${VAR.textMuted};`;
-  header.appendChild(refAndCount);
+  const chevron = document.createElement('span');
+  chevron.className = 'gcs-chevron';
+  chevron.textContent = '▶';
+  chevron.style.cssText = `font-size:9px;color:${VAR.textMuted};flex-shrink:0;transition:transform .12s;`;
+
+  const link = document.createElement('a');
+  link.href = match.result.project_path
+    ? `${location.origin}/${match.result.project_path}/-/blob/${match.result.ref}/${match.result.path}`
+    : `${location.origin}/${match.result.path}`;
+  link.textContent = match.result.path;
+  link.style.cssText = `color:${VAR.textLink};text-decoration:none;font-weight:500;word-break:break-all;flex:1;min-width:0;`;
+  link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
+  link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+  link.addEventListener('click', e => e.stopPropagation());
+
+  const meta = document.createElement('span');
+  meta.textContent = `${match.result.ref} · ${match.lines.length} match${match.lines.length !== 1 ? 'es' : ''}`;
+  meta.style.cssText = `font-size:11px;color:${VAR.textMuted};white-space:nowrap;flex-shrink:0;`;
+
+  header.append(chevron, link, meta);
   card.appendChild(header);
 
   const linesDiv = div([
     'display:none',
-    'padding:4px 14px 10px 30px',
+    'padding:4px 14px 10px 42px',
     `background:${VAR.bgSubtle}`,
     'font:12px/1.6 "SFMono-Regular",Consolas,monospace',
-    'overflow:auto',
-    'max-height:300px',
+    'overflow:auto', 'max-height:300px',
   ].join(';'));
-  linesDiv.className = 'gcs-chevron-content';
+  linesDiv.className = 'gcs-collapsible';
 
   for (const { lineNum, text } of match.lines) {
     const row = div('display:flex;gap:12px;');
@@ -526,7 +597,7 @@ function renderDeepCard(match: DeepMatch): HTMLDivElement {
   }
 
   card.appendChild(linesDiv);
-  toggleOnClick(header, chevron, linesDiv);
+  toggleCollapsible(header, chevron, linesDiv);
   return card;
 }
 
