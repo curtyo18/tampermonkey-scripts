@@ -2,6 +2,33 @@ import type { PageResult, FetchCallbacks, SearchResult, ApiError } from './types
 
 const CONCURRENCY = 5;
 
+// ── Project path resolution ───────────────────────────────────────────
+
+const projectPathCache = new Map<number, string>();
+
+async function resolveProjectPath(id: number): Promise<string | null> {
+  if (projectPathCache.has(id)) return projectPathCache.get(id)!;
+  try {
+    const resp = await fetch(`/api/v4/projects/${id}`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (!resp.ok) return null;
+    const p = await resp.json() as { path_with_namespace: string };
+    projectPathCache.set(id, p.path_with_namespace);
+    return p.path_with_namespace;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveProjectPaths(ids: number[]): Promise<Map<number, string>> {
+  const entries = await Promise.all(
+    ids.map(async id => [id, await resolveProjectPath(id)] as const)
+  );
+  return new Map(entries.filter((e): e is [number, string] => e[1] !== null));
+}
+
 export async function fetchPage(endpoint: string, query: string, page: number): Promise<PageResult> {
   const url = `${endpoint}?scope=blobs&search=${encodeURIComponent(query)}&page=${page}&per_page=100`;
   const resp = await fetch(url, {

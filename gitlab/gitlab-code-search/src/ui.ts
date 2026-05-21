@@ -183,16 +183,30 @@ function renderCard(result: SearchResult): HTMLDivElement {
   header.style.marginBottom = '6px';
 
   const link = document.createElement('a');
-  link.href = `${location.origin}/${result.path}`;
-  link.textContent = result.path;
+  if (result.project_path) {
+    link.href = `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`;
+    link.textContent = result.path;
+  } else {
+    link.href = `${location.origin}/${result.path}`;
+    link.textContent = result.path;
+  }
   link.style.cssText = 'color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;';
   link.addEventListener('mouseenter', () => { link.style.textDecoration = 'underline'; });
   link.addEventListener('mouseleave', () => { link.style.textDecoration = 'none'; });
+
+  const repoLabel = result.project_path
+    ? document.createElement('span')
+    : null;
+  if (repoLabel) {
+    repoLabel.textContent = result.project_path!;
+    repoLabel.style.cssText = 'display:block;font-size:11px;color:var(--gl-text-color-secondary);margin-bottom:2px;';
+  }
 
   const ref = document.createElement('span');
   ref.textContent = ` · ${result.ref}`;
   ref.style.color = 'var(--gl-text-color-secondary)';
 
+  if (repoLabel) header.appendChild(repoLabel);
   header.appendChild(link);
   header.appendChild(ref);
   card.appendChild(header);

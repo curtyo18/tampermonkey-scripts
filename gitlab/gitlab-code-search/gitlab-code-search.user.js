@@ -22,9 +22,6 @@
   }
   function buildQuery(mainQuery, filters) {
     const parts = [mainQuery.trim()];
-    for (const ext of filters.extensions ?? []) {
-      if (ext) parts.push(`extension:${ext}`);
-    }
     if (filters.filename) parts.push(`filename:${filters.filename}`);
     if (filters.path) parts.push(`path:${filters.path}`);
     return parts.filter(Boolean).join(" ");
@@ -32,8 +29,7 @@
   function extractRepoPaths(results) {
     const seen = /* @__PURE__ */ new Set();
     for (const r of results) {
-      const segs = (r.path ?? "").split("/");
-      if (segs.length >= 2) seen.add(`${segs[0]}/${segs[1]}`);
+      if (r.project_path) seen.add(r.project_path);
     }
     return [...seen].sort();
   }
@@ -46,6 +42,28 @@
 
   // src/api.ts
   var CONCURRENCY = 5;
+  var projectPathCache = /* @__PURE__ */ new Map();
+  async function resolveProjectPath(id) {
+    if (projectPathCache.has(id)) return projectPathCache.get(id);
+    try {
+      const resp = await fetch(`/api/v4/projects/${id}`, {
+        credentials: "include",
+        headers: { Accept: "application/json" }
+      });
+      if (!resp.ok) return null;
+      const p = await resp.json();
+      projectPathCache.set(id, p.path_with_namespace);
+      return p.path_with_namespace;
+    } catch {
+      return null;
+    }
+  }
+  async function resolveProjectPaths(ids) {
+    const entries = await Promise.all(
+      ids.map(async (id) => [id, await resolveProjectPath(id)])
+    );
+    return new Map(entries.filter((e) => e[1] !== null));
+  }
   async function fetchPage(endpoint, query, page) {
     const url = `${endpoint}?scope=blobs&search=${encodeURIComponent(query)}&page=${page}&per_page=100`;
     const resp = await fetch(url, {
@@ -251,8 +269,13 @@
     const header = document.createElement("div");
     header.style.marginBottom = "6px";
     const link = document.createElement("a");
-    link.href = `${location.origin}/${result.path}`;
-    link.textContent = result.path;
+    if (result.project_path) {
+      link.href = `${location.origin}/${result.project_path}/-/blob/${result.ref}/${result.path}`;
+      link.textContent = result.path;
+    } else {
+      link.href = `${location.origin}/${result.path}`;
+      link.textContent = result.path;
+    }
     link.style.cssText = "color:var(--gl-text-color-link);text-decoration:none;font-weight:500;word-break:break-all;";
     link.addEventListener("mouseenter", () => {
       link.style.textDecoration = "underline";
@@ -260,9 +283,15 @@
     link.addEventListener("mouseleave", () => {
       link.style.textDecoration = "none";
     });
+    const repoLabel = result.project_path ? document.createElement("span") : null;
+    if (repoLabel) {
+      repoLabel.textContent = result.project_path;
+      repoLabel.style.cssText = "display:block;font-size:11px;color:var(--gl-text-color-secondary);margin-bottom:2px;";
+    }
     const ref = document.createElement("span");
     ref.textContent = ` \xB7 ${result.ref}`;
     ref.style.color = "var(--gl-text-color-secondary)";
+    if (repoLabel) header.appendChild(repoLabel);
     header.appendChild(link);
     header.appendChild(ref);
     card.appendChild(header);
@@ -385,14 +414,28 @@
       }
     }
     try {
-      session.results = await fetchAllPages(endpoint, query, {
-        onBatch(batch, loaded, total) {
-          container.appendResults(batch);
+      const rawResults = await fetchAllPages(endpoint, query, {
+        onBatch(_, loaded, total) {
           container.setStatus(loaded, total);
         },
         onError: handleError
       });
-      if (session.results.length === 0) container.setStatus(0, 0);
+      const uniqueIds = [
+        ...new Set(rawResults.map((r) => r.project_id).filter((id) => id !== null))
+      ];
+      const projectPaths = await resolveProjectPaths(uniqueIds);
+      const enriched = rawResults.map((r) => ({
+        ...r,
+        project_path: r.project_id != null ? projectPaths.get(r.project_id) ?? void 0 : void 0
+      }));
+      const filtered = filterState.extensions.length > 0 ? enriched.filter((r) => {
+        const ext = r.filename.split(".").pop()?.toLowerCase() ?? "";
+        return filterState.extensions.some((e) => e.toLowerCase() === ext);
+      }) : enriched;
+      session.results = filtered;
+      container.appendResults(filtered);
+      container.setStatus(filtered.length, filtered.length);
+      if (filtered.length === 0) container.setStatus(0, 0);
     } catch (err) {
       handleError(err);
     }

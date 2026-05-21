@@ -13,6 +13,7 @@ export interface SearchResult {
   startline: number | null;
   data?: string;
   basename?: string;
+  project_path?: string; // enriched post-fetch: "namespace/repo" from /api/v4/projects/{id}
 }
 
 export interface PageResult {

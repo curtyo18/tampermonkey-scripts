@@ -1,6 +1,6 @@
 import type { FilterState, ApiError } from './types.js';
 import { resolveApiEndpoint, buildQuery } from './utils.js';
-import { fetchAllPages } from './api.js';
+import { fetchAllPages, resolveProjectPaths } from './api.js';
 import { createFilterPanel, createResultsContainer, createExportToolbar } from './ui.js';
 import type { SearchResult, ResultsContainer } from './types.js';
 
@@ -53,14 +53,42 @@ async function runSearch(container: ResultsContainer, filterState: FilterState, 
   }
 
   try {
-    session.results = await fetchAllPages(endpoint, query, {
-      onBatch(batch, loaded, total) {
-        container.appendResults(batch);
+    // Collect all pages first, showing fetch progress but deferring render until
+    // project paths are resolved — otherwise links would all point to the wrong place.
+    const rawResults = await fetchAllPages(endpoint, query, {
+      onBatch(_, loaded, total) {
         container.setStatus(loaded, total);
       },
       onError: handleError,
     });
-    if (session.results.length === 0) container.setStatus(0, 0);
+
+    // Resolve project paths for every unique project_id in the result set.
+    // The GitLab blob search API only returns a numeric project_id; the namespace/repo
+    // path needed to build correct file URLs must be fetched separately.
+    const uniqueIds = [
+      ...new Set(rawResults.map(r => r.project_id).filter((id): id is number => id !== null)),
+    ];
+    const projectPaths = await resolveProjectPaths(uniqueIds);
+
+    const enriched: SearchResult[] = rawResults.map(r => ({
+      ...r,
+      project_path: r.project_id != null ? (projectPaths.get(r.project_id) ?? undefined) : undefined,
+    }));
+
+    // Apply extension filter client-side (OR logic across extensions, works without
+    // server-side Advanced Search support, and lets multiple extensions be combined).
+    const filtered =
+      filterState.extensions.length > 0
+        ? enriched.filter(r => {
+            const ext = r.filename.split('.').pop()?.toLowerCase() ?? '';
+            return filterState.extensions.some(e => e.toLowerCase() === ext);
+          })
+        : enriched;
+
+    session.results = filtered;
+    container.appendResults(filtered);
+    container.setStatus(filtered.length, filtered.length);
+    if (filtered.length === 0) container.setStatus(0, 0);
   } catch (err) {
     handleError(err as ApiError);
   }
