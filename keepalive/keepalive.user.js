@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Keepalive
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.0.2
+// @version      1.0.3
 // @description  Keeps any website session alive via event dispatch, fetch ping, and/or element click
 // @author       Curt Radford
 // @match        https://example.com/*
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.2';
+  const VERSION = '1.0.3';
 
   // ── CONFIG ──────────────────────────────────────────────────────────────────
   // This is the only block you need to edit.
@@ -103,7 +103,7 @@
     setInterval(() => {
       try {
         ACTIVITY_EVENTS.forEach(name => {
-          const ev = new Event(name);
+          const ev = new Event(name, { bubbles: true });
           targets.forEach(t => t?.dispatchEvent(ev));
         });
         updateBadge(badge, 'event dispatch');

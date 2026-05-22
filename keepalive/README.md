@@ -34,7 +34,7 @@ All configuration is in the `CONFIG` block near the top of the script — it's t
 A small badge in the top-right corner shows which technique last fired and at what time:
 
 ```
-[Keepalive v1.0.1] fetch ping @ 14:32:07
+[Keepalive v1.x.x] fetch ping @ 14:32:07
 ```
 
 ## Versioning
