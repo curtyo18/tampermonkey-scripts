@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Auto-bumps the @version patch in staged *.user.js files.
+# Skips files in directories that contain a package.json (build outputs).
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.user\.js$' || true)
+
+[ -z "$staged" ] && exit 0
+
+while IFS= read -r file; do
+  dir=$(dirname "$file")
+
+  # Skip build outputs — version is managed by package.json + build script
+  [ -f "$dir/package.json" ] && continue
+
+  # Extract current semver from @version header (requires three-part X.Y.Z)
+  current=$(grep -m1 '// @version' "$file" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+  if [ -z "$current" ]; then
+    echo "[pre-commit] $file: no three-part semver @version found — skipping"
+    continue
+  fi
+
+  # Bump patch component
+  IFS='.' read -r major minor patch <<< "$current"
+  new_version="$major.$minor.$((patch + 1))"
+
+  # Escape dots for use in sed ERE pattern
+  escaped=$(printf '%s' "$current" | sed 's/[.]/\\./g')
+
+  # Update @version line in metadata block
+  sed -i -E "s|(// @version[[:space:]]+)$escaped|\1$new_version|" "$file"
+
+  # Update const VERSION = '...' line if present (single-quoted form)
+  sed -i -E "s|(const VERSION = ')$escaped(')|\1$new_version\2|" "$file"
+
+  # Re-stage; if this fails, restore the file and abort the commit
+  git add "$file" || {
+    echo "[pre-commit] ERROR: failed to re-stage $file — reverting version bump" >&2
+    git checkout -- "$file"
+    exit 1
+  }
+
+  echo "[pre-commit] $file: $current → $new_version"
+done <<< "$staged"
