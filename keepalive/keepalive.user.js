@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Keepalive
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.0.4
+// @version      1.0.5
 // @description  Keeps any website session alive via event dispatch, fetch ping, and/or element click
 // @author       Curt Radford
 // @match        https://example.com/*
@@ -12,7 +12,13 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.4';
+  const VERSION = '1.0.5';
+
+  // Patch visibility API so the page always believes this tab is visible.
+  // Prevents sites from pausing their inactivity timers on tab switch, and
+  // reduces Chrome's background timer throttling (which also reads visibilityState).
+  Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+  Object.defineProperty(document, 'hidden',          { get: () => false,     configurable: true });
 
   // ── CONFIG ──────────────────────────────────────────────────────────────────
   // This is the only block you need to edit.
@@ -51,11 +57,25 @@
 
   // ── ACTIVITY EVENTS ─────────────────────────────────────────────────────────
   const ACTIVITY_EVENTS = [
-    'mousemove', 'keydown', 'wheel', 'DOMMouseScroll', 'mousewheel',
-    'mousedown', 'touchstart', 'touchmove',
-    'MSPointerDown', 'MSPointerMove',
-    'visibilitychange', 'focus', 'click',
+    'mousemove', 'mousedown', 'click',          // MouseEvent — dispatched with real coords
+    'keydown',                                   // KeyboardEvent — dispatched with benign key
+    'wheel', 'mousewheel', 'DOMMouseScroll',     // WheelEvent / legacy scroll events
+    'touchstart', 'touchmove',                   // touch (plain Event — TouchEvent not universal)
+    'MSPointerDown', 'MSPointerMove',            // legacy IE/Edge pointer events
+    'scroll', 'focus',
   ];
+
+  // Returns the most specific event type for each name so handlers that read
+  // typed properties (e.g. e.clientX, e.key) see non-zero values.
+  function makeEvent(name) {
+    if (name === 'mousemove' || name === 'mousedown' || name === 'click')
+      return new MouseEvent(name, { bubbles: true, clientX: 1, clientY: 1 });
+    if (name === 'keydown')
+      return new KeyboardEvent(name, { bubbles: true, key: 'Shift' });
+    if (name === 'wheel' || name === 'mousewheel')
+      return new WheelEvent(name, { bubbles: true, deltaY: 1 });
+    return new Event(name, { bubbles: true });
+  }
 
   // ── STATUS BADGE ────────────────────────────────────────────────────────────
   function createBadge() {
@@ -103,7 +123,7 @@
     setInterval(() => {
       try {
         ACTIVITY_EVENTS.forEach(name => {
-          targets.forEach(t => t?.dispatchEvent(new Event(name, { bubbles: true })));
+          targets.forEach(t => t?.dispatchEvent(makeEvent(name)));
         });
         updateBadge(badge, 'event dispatch');
       } catch (err) {
@@ -119,7 +139,7 @@
     const url = cfg.url ?? window.location.href;
 
     setInterval(() => {
-      window.fetch(url)
+      window.fetch(url, { method: 'HEAD' })
         .then(() => updateBadge(badge, 'fetch ping'))
         .catch(err => console.error('[Keepalive] T2 error:', err));
     }, cfg.intervalMs);
