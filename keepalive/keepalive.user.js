@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Keepalive
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.0.5
+// @version      1.0.6
 // @description  Keeps any website session alive via event dispatch, fetch ping, and/or element click
 // @author       Curt Radford
 // @match        https://example.com/*
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.5';
+  const VERSION = '1.0.6';
 
   // Patch visibility API so the page always believes this tab is visible.
   // Prevents sites from pausing their inactivity timers on tab switch, and
@@ -33,7 +33,7 @@
     // Fires synthetic DOM events to reset client-side inactivity timers.
     eventDispatch: {
       enabled: true,
-      intervalMs: 10_000,
+      intervalMs: 30_000,
       iframeId: null,    // null = top window + body only
                          // set to an iframe's id attribute to also target that frame
     },
@@ -41,7 +41,7 @@
     // Periodically fetches a URL to keep the server-side session alive.
     fetchPing: {
       enabled: true,
-      intervalMs: 120_000,   // aim for ≤50% of your server's session TTL
+      intervalMs: 300_000,   // aim for ≤50% of your server's session TTL
       url: null,             // null = window.location.href
                              // override with a known-safe endpoint if needed
     },

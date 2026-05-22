@@ -20,10 +20,10 @@ All configuration is in the `CONFIG` block near the top of the script — it's t
 | Option | Default | Description |
 |--------|---------|-------------|
 | `eventDispatch.enabled` | `true` | Fire synthetic DOM events on an interval |
-| `eventDispatch.intervalMs` | `10000` | How often to fire events (ms) |
+| `eventDispatch.intervalMs` | `30000` | How often to fire events (ms) |
 | `eventDispatch.iframeId` | `null` | Also dispatch into this iframe (by `id` attribute). `null` = top window only |
 | `fetchPing.enabled` | `true` | Fetch a URL on an interval |
-| `fetchPing.intervalMs` | `120000` | How often to ping (ms). Set to ≤50% of your server's session TTL |
+| `fetchPing.intervalMs` | `300000` | How often to ping (ms). Set to ≤50% of your server's session TTL |
 | `fetchPing.url` | `null` | URL to fetch. `null` = current page URL |
 | `elementClick.enabled` | `true` | Click an element on an interval |
 | `elementClick.intervalMs` | `30000` | How often to click (ms) |
