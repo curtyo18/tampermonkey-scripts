@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Keepalive
 // @namespace    https://github.com/curtyo18/tampermonkey-scripts
-// @version      1.0.1
+// @version      1.0.2
 // @description  Keeps any website session alive via event dispatch, fetch ping, and/or element click
 // @author       Curt Radford
 // @match        https://example.com/*
@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.1';
+  const VERSION = '1.0.2';
 
   // ── CONFIG ──────────────────────────────────────────────────────────────────
   // This is the only block you need to edit.
@@ -120,12 +120,9 @@
     const url = cfg.url ?? window.location.href;
 
     setInterval(() => {
-      try {
-        window.fetch(url);
-        updateBadge(badge, 'fetch ping');
-      } catch (err) {
-        console.error('[Keepalive] T2 error:', err);
-      }
+      window.fetch(url)
+        .then(() => updateBadge(badge, 'fetch ping'))
+        .catch(err => console.error('[Keepalive] T2 error:', err));
     }, cfg.intervalMs);
   }
 
