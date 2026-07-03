@@ -129,7 +129,7 @@ ${" ".repeat(marker.length)}`);
       case "listItem":
         return (node.content ?? []).map(renderNode).join("\n");
       case "blockquote":
-        return renderInline(node.content).split("\n").map((l) => `> ${l}`).join("\n");
+        return (node.content ?? []).map(renderNode).join("\n\n").split("\n").map((l) => l ? `> ${l}` : ">").join("\n");
       case "codeBlock": {
         const lang = node.attrs?.language ?? "";
         const code = (node.content ?? []).map((c) => c.text ?? "").join("");
@@ -140,7 +140,7 @@ ${code}
       case "rule":
         return "---";
       case "panel":
-        return renderInline(node.content);
+        return (node.content ?? []).map(renderNode).join("\n\n");
       case "mention":
         return `@${node.attrs?.text ?? ""}`.replace(/^@@/, "@");
       case "inlineCard":
@@ -151,14 +151,21 @@ ${code}
         return node.content ? node.content.map(renderNode).join("") : node.text ?? "";
     }
   }
+  function renderCell(cell) {
+    return (cell.content ?? []).map(renderNode).join(" ").replace(/\n+/g, " ").replace(/\|/g, "\\|").trim();
+  }
   function renderTable(node) {
-    const rows = (node.content ?? []).map(
-      (row) => (row.content ?? []).map((cell) => renderInline(cell.content).replace(/\n/g, " ").trim())
-    );
+    const rows = (node.content ?? []).map((row) => (row.content ?? []).map(renderCell));
     if (rows.length === 0) return "";
-    const header = rows[0];
+    const firstRowIsHeader = (node.content?.[0]?.content ?? []).every(
+      (c) => c.type === "tableHeader"
+    );
+    const width = Math.max(...rows.map((r) => r.length));
+    const pad = (r) => [...r, ...Array(width - r.length).fill("")];
+    const header = firstRowIsHeader ? pad(rows[0]) : Array(width).fill("");
+    const body = firstRowIsHeader ? rows.slice(1) : rows;
     const sep = header.map(() => "---");
-    const lines = [header, sep, ...rows.slice(1)].map((cells) => `| ${cells.join(" | ")} |`);
+    const lines = [header, sep, ...body.map(pad)].map((cells) => `| ${cells.join(" | ")} |`);
     return lines.join("\n");
   }
   function adfToMarkdown(node) {
@@ -470,12 +477,17 @@ ${t.attachments.map((a) => `- ${a}`).join("\n")}`);
         showPanel(toMarkdown(ticket), "api");
       } catch (err) {
         console.warn("[jira-extractor] API fetch failed, falling back to DOM:", err);
-        const ticket = fromDom();
-        if (!ticket || !ticket.summary) {
-          showPanel("Couldn't read this ticket (API blocked and DOM scrape empty).", "dom");
-          return;
+        try {
+          const ticket = fromDom();
+          if (!ticket || !ticket.summary) {
+            showPanel("Couldn't read this ticket (API blocked and DOM scrape empty).", "dom");
+            return;
+          }
+          showPanel(toMarkdown(ticket), "dom");
+        } catch (domErr) {
+          console.warn("[jira-extractor] DOM fallback failed:", domErr);
+          showPanel("Couldn't read this ticket (API and DOM extraction both failed).", "dom");
         }
-        showPanel(toMarkdown(ticket), "dom");
       }
     }
     (function patchHistory(h) {

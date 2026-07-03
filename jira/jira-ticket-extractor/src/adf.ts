@@ -59,9 +59,13 @@ function renderNode(node: AdfNode): string {
     case 'listItem':
       return (node.content ?? []).map(renderNode).join('\n');
     case 'blockquote':
-      return renderInline(node.content)
+      // Block container: render children as blocks (preserving paragraph breaks),
+      // then prefix every line.
+      return (node.content ?? [])
+        .map(renderNode)
+        .join('\n\n')
         .split('\n')
-        .map(l => `> ${l}`)
+        .map(l => (l ? `> ${l}` : '>'))
         .join('\n');
     case 'codeBlock': {
       const lang = (node.attrs?.language as string) ?? '';
@@ -71,7 +75,8 @@ function renderNode(node: AdfNode): string {
     case 'rule':
       return '---';
     case 'panel':
-      return renderInline(node.content);
+      // Block container: keep paragraph/list breaks between children.
+      return (node.content ?? []).map(renderNode).join('\n\n');
     case 'mention':
       return `@${(node.attrs?.text as string) ?? ''}`.replace(/^@@/, '@');
     case 'inlineCard':
@@ -84,14 +89,32 @@ function renderNode(node: AdfNode): string {
   }
 }
 
+function renderCell(cell: AdfNode): string {
+  // Cells hold block content (paragraphs); flatten to a single line and escape
+  // pipes so a literal `|` in the text doesn't spawn a phantom column.
+  return (cell.content ?? [])
+    .map(renderNode)
+    .join(' ')
+    .replace(/\n+/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim();
+}
+
 function renderTable(node: AdfNode): string {
-  const rows = (node.content ?? []).map(row =>
-    (row.content ?? []).map(cell => renderInline(cell.content).replace(/\n/g, ' ').trim()),
-  );
+  const rows = (node.content ?? []).map(row => (row.content ?? []).map(renderCell));
   if (rows.length === 0) return '';
-  const header = rows[0];
+  // Markdown requires a header row + separator. ADF marks header cells as
+  // `tableHeader`; if the first row is all headers use it, otherwise synthesize
+  // a blank header so no data row is consumed into the header slot.
+  const firstRowIsHeader = (node.content?.[0]?.content ?? []).every(
+    c => c.type === 'tableHeader',
+  );
+  const width = Math.max(...rows.map(r => r.length));
+  const pad = (r: string[]): string[] => [...r, ...Array(width - r.length).fill('')];
+  const header = firstRowIsHeader ? pad(rows[0]) : Array(width).fill('');
+  const body = firstRowIsHeader ? rows.slice(1) : rows;
   const sep = header.map(() => '---');
-  const lines = [header, sep, ...rows.slice(1)].map(cells => `| ${cells.join(' | ')} |`);
+  const lines = [header, sep, ...body.map(pad)].map(cells => `| ${cells.join(' | ')} |`);
   return lines.join('\n');
 }
 

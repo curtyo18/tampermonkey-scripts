@@ -51,4 +51,45 @@ describe('adfToMarkdown', () => {
     const node = doc({ type: 'someFutureNode', content: [p(t('still readable'))] });
     expect(adfToMarkdown(node)).toBe('still readable');
   });
+
+  it('renders a nested bullet list with indented children', () => {
+    const li = (...content: AdfNode[]): AdfNode => ({ type: 'listItem', content });
+    const inner: AdfNode = { type: 'bulletList', content: [li(p(t('child')))] };
+    const outer: AdfNode = { type: 'bulletList', content: [li(p(t('parent')), inner)] };
+    expect(adfToMarkdown(doc(outer))).toBe('- parent\n  - child');
+  });
+
+  it('preserves paragraph breaks inside a blockquote', () => {
+    const node = doc({ type: 'blockquote', content: [p(t('one')), p(t('two'))] });
+    expect(adfToMarkdown(node)).toBe('> one\n>\n> two');
+  });
+
+  it('preserves paragraph breaks inside a panel', () => {
+    const node = doc({ type: 'panel', content: [p(t('note one')), p(t('note two'))] });
+    expect(adfToMarkdown(node)).toBe('note one\n\nnote two');
+  });
+
+  it('renders a table with a header row and escapes pipes in cells', () => {
+    const cell = (text: string, header = false): AdfNode => ({
+      type: header ? 'tableHeader' : 'tableCell',
+      content: [p(t(text))],
+    });
+    const rows: AdfNode[] = [
+      { type: 'tableRow', content: [cell('H1', true), cell('H2', true)] },
+      { type: 'tableRow', content: [cell('a | b'), cell('c')] },
+    ];
+    const node = doc({ type: 'table', content: rows });
+    expect(adfToMarkdown(node)).toBe('| H1 | H2 |\n| --- | --- |\n| a \\| b | c |');
+  });
+
+  it('synthesizes a blank header when the table has no header row', () => {
+    const cell = (text: string): AdfNode => ({ type: 'tableCell', content: [p(t(text))] });
+    const rows: AdfNode[] = [
+      { type: 'tableRow', content: [cell('r1a'), cell('r1b')] },
+      { type: 'tableRow', content: [cell('r2a'), cell('r2b')] },
+    ];
+    const node = doc({ type: 'table', content: rows });
+    // First data row must NOT be swallowed into the header slot.
+    expect(adfToMarkdown(node)).toBe('|  |  |\n| --- | --- |\n| r1a | r1b |\n| r2a | r2b |');
+  });
 });
