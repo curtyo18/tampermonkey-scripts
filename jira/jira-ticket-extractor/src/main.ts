@@ -21,12 +21,19 @@ if (isJira()) {
       showPanel(toMarkdown(ticket), 'api');
     } catch (err) {
       console.warn('[jira-extractor] API fetch failed, falling back to DOM:', err);
-      const ticket = fromDom();
-      if (!ticket || !ticket.summary) {
-        showPanel("Couldn't read this ticket (API blocked and DOM scrape empty).", 'dom');
-        return;
+      // The fallback itself must never throw an unobserved rejection — onExtract
+      // is wired straight to onclick, so any escape would silently no-op the button.
+      try {
+        const ticket = fromDom();
+        if (!ticket || !ticket.summary) {
+          showPanel("Couldn't read this ticket (API blocked and DOM scrape empty).", 'dom');
+          return;
+        }
+        showPanel(toMarkdown(ticket), 'dom');
+      } catch (domErr) {
+        console.warn('[jira-extractor] DOM fallback failed:', domErr);
+        showPanel("Couldn't read this ticket (API and DOM extraction both failed).", 'dom');
       }
-      showPanel(toMarkdown(ticket), 'dom');
     }
   }
 

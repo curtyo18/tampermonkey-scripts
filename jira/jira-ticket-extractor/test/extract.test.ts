@@ -71,4 +71,22 @@ describe('fromApi', () => {
     const t = fromApi(raw, 'cloud', 'https://acme.atlassian.net');
     expect(t.acceptanceCriteria).toBe('- must work');
   });
+
+  it('falls back to a heading split when there is no AC custom field', () => {
+    const description: AdfNode = {
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Overview' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Body.' }] },
+        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Acceptance Criteria' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'Must log in.' }] },
+      ],
+    };
+    const raw: RawIssue = { key: 'PROJ-9', fields: { summary: 'S', description } };
+    const t = fromApi(raw, 'cloud', 'https://acme.atlassian.net');
+    expect(t.acceptanceCriteria).toBe('Must log in.');
+    expect(t.description).toContain('Overview');
+    expect(t.description).toContain('Body.');
+    expect(t.description).not.toContain('Acceptance Criteria');
+  });
 });
