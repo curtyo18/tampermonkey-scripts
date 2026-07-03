@@ -18,10 +18,7 @@
   }
   function detectFlavor() {
     if (location.host.endsWith(".atlassian.net")) return "cloud";
-    const appName = document.querySelector('meta[name="application-name"]')?.getAttribute("content");
-    if (appName && /jira/i.test(appName) && location.host.endsWith(".atlassian.net")) {
-      return "cloud";
-    }
+    if (document.querySelector("#jira-frontend")) return "cloud";
     return "server";
   }
   function getIssueKey() {

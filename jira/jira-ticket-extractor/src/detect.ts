@@ -8,12 +8,10 @@ export function getBaseUrl(): string {
 
 export function detectFlavor(): JiraFlavor {
   if (location.host.endsWith('.atlassian.net')) return 'cloud';
-  const appName = document
-    .querySelector('meta[name="application-name"]')
-    ?.getAttribute('content');
-  if (appName && /jira/i.test(appName) && location.host.endsWith('.atlassian.net')) {
-    return 'cloud';
-  }
+  // Custom-domain Cloud: the modern SPA root (#jira-frontend) is Cloud-only,
+  // whereas the `application-name=JIRA` meta appears on Server/DC too and can't
+  // discriminate. Fall through to server for self-hosted Data Center.
+  if (document.querySelector('#jira-frontend')) return 'cloud';
   return 'server';
 }
 

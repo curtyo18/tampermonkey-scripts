@@ -45,6 +45,12 @@ describe('detectFlavor', () => {
     expect(detectFlavor()).toBe('cloud');
   });
 
+  it('returns cloud for a custom domain with the #jira-frontend root', () => {
+    setLocation('http://jira.acme.com/browse/A-1');
+    document.body.innerHTML = '<div id="jira-frontend"></div>';
+    expect(detectFlavor()).toBe('cloud');
+  });
+
   it('returns server otherwise', () => {
     setLocation('http://jira.acme.internal/browse/A-1');
     expect(detectFlavor()).toBe('server');
