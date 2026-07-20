@@ -140,6 +140,16 @@ export class Ui {
     if (!this.host.isConnected) document.body.appendChild(this.host);
   }
 
+  /**
+   * Detach the host entirely. `clear()` empties the layer but leaves the host
+   * in the document; navigating an SPA onto a page this script has nothing to
+   * do with should leave no trace of it at all.
+   */
+  unmount(): void {
+    this.clear();
+    this.host.remove();
+  }
+
   clear(): void {
     // Settle anything awaiting a dialog we are about to destroy. Without this
     // an open import preview leaves its caller awaiting a promise whose only

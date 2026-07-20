@@ -4,9 +4,11 @@ import {
   MAX_SUBMIT_ATTEMPTS,
   WAIT_TIMEOUT_MS,
   type AccountConfig,
+  type PageDecision,
   type RunReport,
   type RunState,
   type Step,
+  type Store,
 } from './types';
 
 /**
@@ -71,6 +73,43 @@ export function accountMatchesPage(account: AccountConfig, url: string): boolean
 }
 
 /**
+ * Decide what should happen on the page at `url`, given everything known about
+ * it. Pure: no DOM, no clock beyond the injected `now`, no storage.
+ *
+ * This exists as its own function because it is the part with the branches
+ * worth testing, and it used to be welded to `location`, `document` and the UI
+ * inside the entry IIFE where none of it could be reached by a test.
+ *
+ * An unreadable store is deliberately NOT dormant — it yields zero matches,
+ * which would otherwise be indistinguishable from an unconfigured page.
+ */
+export function decideForPage(
+  store: Store,
+  url: string,
+  storageError: string | null,
+  now = Date.now(),
+): PageDecision {
+  const matches = store.accounts.filter((account) => accountMatchesPage(account, url));
+
+  if (matches.length === 0 && !storageError) return { kind: 'dormant' };
+  if (storageError) return { kind: 'error', message: storageError };
+
+  if (matches.length !== 1) return { kind: 'trigger', matches };
+
+  const account = matches[0];
+  if (isAutoRunBlocked(store.run, account.id, now)) {
+    return {
+      kind: 'trigger',
+      matches,
+      blockedReason: `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts — click to try again.`,
+    };
+  }
+
+  const steps = stepsForPage(account, url);
+  return { kind: 'run', account, steps, key: `${account.id}:${steps.map((s) => s.id).join(',')}` };
+}
+
+/**
  * Assigning `el.value` directly is swallowed by React: its value tracker sees
  * no change and reverts the field on the next render. Writing through the
  * native setter bypasses the tracker, and the dispatched events are what
@@ -96,10 +135,18 @@ export function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+/**
+ * `isStale` is what stops this resolving onto the wrong page. The observer
+ * watches the whole subtree, so an SPA rendering its *next* route is itself a
+ * childList mutation — without this check a wait started on the login page
+ * happily resolves against a same-named field on the page after it, and the
+ * caller then types credentials into it.
+ */
 export function waitForElement(
   selector: string,
   doc: Document,
   timeoutMs: number,
+  isStale: () => boolean = () => false,
 ): Promise<Element | null> {
   let existing: Element | null;
   try {
@@ -111,6 +158,13 @@ export function waitForElement(
 
   return new Promise((resolve) => {
     const observer = new MutationObserver(() => {
+      if (isStale()) {
+        observer.disconnect();
+        clearTimeout(timer);
+        resolve(null);
+        return;
+      }
+
       const found = doc.querySelector(selector);
       if (!found) return;
       observer.disconnect();
@@ -144,10 +198,23 @@ export async function runSteps(
   steps: Step[],
   autoSubmit: boolean,
   doc: Document,
+  isStale: () => boolean = () => false,
 ): Promise<RunReport> {
+  const abandoned = (i: number): RunReport => ({
+    outcome: 'abandoned',
+    stepIndex: i,
+    submitted: false,
+  });
+
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const where = `Step ${i + 1} (${step.kind})`;
+
+    // Checked at the top of every iteration, and again immediately before each
+    // action below. A single check around the loop would gate only the report,
+    // leaving the fill and the submit themselves free to land on a page the
+    // user has already navigated to.
+    if (isStale()) return abandoned(i);
 
     if (step.isSubmit && !autoSubmit) {
       return { outcome: 'halted-before-submit', stepIndex: i, submitted: false };
@@ -155,7 +222,13 @@ export async function runSteps(
 
     try {
       if (step.kind === 'waitFor') {
-        const found = await waitForElement(step.selector, doc, step.timeoutMs ?? WAIT_TIMEOUT_MS);
+        const found = await waitForElement(
+          step.selector,
+          doc,
+          step.timeoutMs ?? WAIT_TIMEOUT_MS,
+          isStale,
+        );
+        if (isStale()) return abandoned(i);
         if (!found) {
           return {
             outcome: 'failed',
@@ -167,7 +240,24 @@ export async function runSteps(
         continue;
       }
 
-      const el = doc.querySelector(step.selector);
+      // Only the first step waits. A page block becomes current the moment its
+      // pattern matches, which on an SPA route change is before the framework
+      // has rendered the form — so the opening step has to tolerate an empty
+      // DOM. Later steps run against a page that has already proven itself
+      // present, and keeping them instant is what makes a mistyped selector
+      // report in the same breath instead of after a timeout.
+      //
+      // The plain query runs first regardless so an invalid selector still
+      // throws SyntaxError into the catch below, rather than being flattened
+      // into a "nothing matched" after the full timeout.
+      let el = doc.querySelector(step.selector);
+      if (!el && i === 0) {
+        el = await waitForElement(step.selector, doc, WAIT_TIMEOUT_MS, isStale);
+        // The wait is the long one — seconds during which the route can change
+        // underneath an element that has only just appeared.
+        if (isStale()) return abandoned(i);
+      }
+
       if (!el) {
         return {
           outcome: 'failed',
@@ -194,6 +284,7 @@ export async function runSteps(
             submitted: false,
           };
         }
+        if (isStale()) return abandoned(i);
         setNativeValue(el, step.value);
         continue;
       }
@@ -210,6 +301,7 @@ export async function runSteps(
           submitted: false,
         };
       }
+      if (isStale()) return abandoned(i);
       clickable.click();
 
       if (step.isSubmit) {

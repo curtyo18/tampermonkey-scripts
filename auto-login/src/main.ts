@@ -1,18 +1,12 @@
 import { compilePattern } from './match';
 import { pickElement } from './picker';
 import { appendStep } from './steps';
-import {
-  accountMatchesPage,
-  isAutoRunBlocked,
-  runSteps,
-  seedAttempts,
-  stepsForPage,
-} from './runner';
+import { decideForPage, runSteps, seedAttempts, stepsForPage } from './runner';
 import { applyMergePlan, buildMergePlan, decodeShare, encodeShare } from './share';
 import { createStorage, emptyStore } from './storage';
 import { Ui } from './ui';
 import {
-  MAX_SUBMIT_ATTEMPTS,
+  NAV_DEBOUNCE_MS,
   newId,
   type AccountConfig,
   type SelectorCandidate,
@@ -20,12 +14,13 @@ import {
   type Store,
 } from './types';
 
+const NAV_EVENT = 'autologin-nav';
+/** Marks `history` as already wrapped, so a second injection does not stack wrappers. */
+const HISTORY_PATCHED = '__autoLoginHistoryPatched';
+
 void (async function main() {
   const storage = createStorage();
   let store: Store = await storage.load();
-
-  const url = location.href;
-  const matches = store.accounts.filter((account) => accountMatchesPage(account, url));
 
   const ui = new Ui({
     onRun: (account) => void run(account, { manual: true }),
@@ -43,34 +38,133 @@ void (async function main() {
     store = updated;
   });
 
-  // Dormant: nothing on this page, so touch no DOM at all. An unreadable store
-  // is deliberately NOT dormant — it yields zero matches, which would otherwise
-  // be indistinguishable from an unconfigured page.
-  if (matches.length === 0 && !storage.lastError) {
-    // Leaving the account's pages is the only reliable signal that a login
-    // finished, so it is where the lockout counter resets.
-    if (store.run) void persist({ ...store, run: null });
-    return;
+  /**
+   * Bumped on every navigation. Everything in flight compares against the value
+   * it captured at the start and abandons itself once they differ.
+   */
+  let navGeneration = 0;
+  /** The logical page an automatic run was last started for. See `PageDecision.key`. */
+  let lastRunKey: string | null = null;
+  /** Serialises syncs so a navigation during a long run cannot start a second one. */
+  let syncing: Promise<void> = Promise.resolve();
+
+  /**
+   * Bring the UI in line with the current URL.
+   *
+   * Called once at load and again after every client-side navigation. An SPA
+   * route change is the only "page load" some forms ever get, so evaluating
+   * once at document-end leaves the script inert for the rest of the document's
+   * life — which is exactly the bug this exists to prevent.
+   *
+   * `initial` marks the one call made for a real document load. Only that call
+   * resets the lockout counter: under SPA navigation this function runs on every
+   * intermediate route, and treating each of them as "the user left the login
+   * page, so the login must have worked" would hand a failing auto-submit an
+   * unlimited budget — the precise loop `MAX_SUBMIT_ATTEMPTS` exists to stop.
+   */
+  function syncToPage(opts: { initial: boolean }): Promise<void> {
+    syncing = syncing.then(() => applySync(opts));
+    return syncing;
   }
 
-  ui.mount();
+  async function applySync({ initial }: { initial: boolean }): Promise<void> {
+    // Read, never bumped: the bump happens in the navigation listener so an
+    // in-flight run learns it is stale immediately. Doing it here instead would
+    // be too late — this function is queued behind that very run.
+    const generation = navGeneration;
+    const isStale = (): boolean => generation !== navGeneration;
 
-  if (storage.lastError) {
-    ui.toast(storage.lastError, 'error', 10000);
-    return;
+    ui.clear();
+
+    const decision = decideForPage(store, location.href, storage.lastError);
+
+    if (decision.kind === 'dormant') {
+      lastRunKey = null;
+      ui.unmount();
+      // Leaving the account's pages is the only reliable signal that a login
+      // finished, so it is where the lockout counter resets — but only on a real
+      // load, per the note above.
+      if (initial && store.run) await persist({ ...store, run: null });
+      return;
+    }
+
+    ui.mount();
+
+    if (decision.kind === 'error') {
+      lastRunKey = null;
+      ui.toast(decision.message, 'error', 10000);
+      return;
+    }
+
+    if (decision.kind === 'trigger') {
+      lastRunKey = null;
+      ui.renderTrigger(decision.matches, decision.blockedReason);
+      return;
+    }
+
+    // Same logical page as the run we already did — a query-string or hash
+    // rewrite, not a navigation. Re-running here would auto-submit repeatedly on
+    // one page, which a full page load never did.
+    if (decision.key === lastRunKey) {
+      ui.renderTrigger([decision.account]);
+      return;
+    }
+
+    lastRunKey = decision.key;
+    await run(decision.account, { manual: false }, isStale);
   }
 
-  const blocked = matches.length === 1 && isAutoRunBlocked(store.run, matches[0].id);
-  if (matches.length === 1 && !blocked) {
-    void run(matches[0], { manual: false });
-  } else {
-    ui.renderTrigger(
-      matches,
-      blocked
-        ? `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts — click to try again.`
-        : undefined,
-    );
-  }
+  // SPA-aware: a client-side route change fires no load event, so nothing else
+  // would ever re-evaluate which account applies. Patching history is pure
+  // function wrapping — no DOM, no observers — so a page that matches nothing
+  // still does no work beyond this.
+  (function patchHistory(history: History): void {
+    // A second injection (another copy of the script, a manager re-injecting)
+    // would otherwise wrap the wrapper and fire N events per navigation.
+    if (Object.prototype.hasOwnProperty.call(history, HISTORY_PATCHED)) return;
+    Object.defineProperty(history, HISTORY_PATCHED, { value: true });
+
+    const fire = (): void => {
+      window.dispatchEvent(new Event(NAV_EVENT));
+    };
+    const push = history.pushState.bind(history);
+    const replace = history.replaceState.bind(history);
+
+    history.pushState = function (...args: Parameters<History['pushState']>) {
+      const result = push(...args);
+      fire();
+      return result;
+    };
+    history.replaceState = function (...args: Parameters<History['replaceState']>) {
+      const result = replace(...args);
+      fire();
+      return result;
+    };
+
+    window.addEventListener('popstate', fire);
+    window.addEventListener('hashchange', fire);
+  })(window.history);
+
+  let navTimer: ReturnType<typeof setTimeout>;
+  let currentUrl = location.href;
+
+  window.addEventListener(NAV_EVENT, () => {
+    // Gated on the URL actually changing. Host apps rewrite history on the page
+    // they are already on — analytics, a `?tab=`, a scroll-restoration
+    // replaceState — and treating those as navigations would abandon a
+    // perfectly good run that is mid-wait.
+    if (location.href !== currentUrl) {
+      currentUrl = location.href;
+      // Bumped here rather than in the sync, so a run waiting on the page we
+      // are leaving stops before its next fill or click, not after it.
+      navGeneration++;
+    }
+
+    clearTimeout(navTimer);
+    navTimer = setTimeout(() => void syncToPage({ initial: false }), NAV_DEBOUNCE_MS);
+  });
+
+  await syncToPage({ initial: true });
 
   async function persist(next: Store): Promise<void> {
     store = next;
@@ -80,7 +174,11 @@ void (async function main() {
     if (!result.written) ui.toast(result.reason ?? 'Changes could not be saved.', 'error', 10000);
   }
 
-  async function run(account: AccountConfig, opts: { manual: boolean }): Promise<void> {
+  async function run(
+    account: AccountConfig,
+    opts: { manual: boolean },
+    isStale: () => boolean = () => false,
+  ): Promise<void> {
     ui.clear();
 
     const steps = stepsForPage(account, location.href);
@@ -92,7 +190,12 @@ void (async function main() {
 
     const attempts = seedAttempts(store.run, account.id, opts.manual);
 
-    const report = await runSteps(steps, account.autoSubmit, document);
+    const report = await runSteps(steps, account.autoSubmit, document, isStale);
+
+    // The run stopped because the page moved on. Say nothing and change nothing:
+    // the sync for the page we are now on decides what happens there, and a
+    // toast about the previous page would only be confusing.
+    if (report.outcome === 'abandoned') return;
 
     if (report.submitted) {
       await persist({

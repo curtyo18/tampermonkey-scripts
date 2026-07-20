@@ -228,6 +228,7 @@
   var STORE_KEY = "autoLogin.store.v1";
   var SCHEMA_VERSION = 1;
   var WAIT_TIMEOUT_MS = 8e3;
+  var NAV_DEBOUNCE_MS = 300;
   var ATTEMPTS_WINDOW_MS = 12e4;
   var MAX_SUBMIT_ATTEMPTS = 3;
   function newId() {
@@ -274,6 +275,22 @@
   function accountMatchesPage(account, url) {
     return account.steps.some((step) => matchesPattern(step.pagePattern, url));
   }
+  function decideForPage(store, url, storageError, now = Date.now()) {
+    const matches = store.accounts.filter((account2) => accountMatchesPage(account2, url));
+    if (matches.length === 0 && !storageError) return { kind: "dormant" };
+    if (storageError) return { kind: "error", message: storageError };
+    if (matches.length !== 1) return { kind: "trigger", matches };
+    const account = matches[0];
+    if (isAutoRunBlocked(store.run, account.id, now)) {
+      return {
+        kind: "trigger",
+        matches,
+        blockedReason: `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts \u2014 click to try again.`
+      };
+    }
+    const steps = stepsForPage(account, url);
+    return { kind: "run", account, steps, key: `${account.id}:${steps.map((s) => s.id).join(",")}` };
+  }
   function setNativeValue(el, value) {
     const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
     el.focus();
@@ -282,7 +299,7 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
-  function waitForElement(selector, doc, timeoutMs) {
+  function waitForElement(selector, doc, timeoutMs, isStale = () => false) {
     let existing;
     try {
       existing = doc.querySelector(selector);
@@ -292,6 +309,12 @@
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve) => {
       const observer = new MutationObserver(() => {
+        if (isStale()) {
+          observer.disconnect();
+          clearTimeout(timer);
+          resolve(null);
+          return;
+        }
         const found = doc.querySelector(selector);
         if (!found) return;
         observer.disconnect();
@@ -309,16 +332,28 @@
     const tag = el.tagName.toLowerCase();
     return (tag === "input" || tag === "textarea") && "value" in el;
   }
-  async function runSteps(steps, autoSubmit, doc) {
+  async function runSteps(steps, autoSubmit, doc, isStale = () => false) {
+    const abandoned = (i) => ({
+      outcome: "abandoned",
+      stepIndex: i,
+      submitted: false
+    });
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const where = `Step ${i + 1} (${step.kind})`;
+      if (isStale()) return abandoned(i);
       if (step.isSubmit && !autoSubmit) {
         return { outcome: "halted-before-submit", stepIndex: i, submitted: false };
       }
       try {
         if (step.kind === "waitFor") {
-          const found = await waitForElement(step.selector, doc, step.timeoutMs ?? WAIT_TIMEOUT_MS);
+          const found = await waitForElement(
+            step.selector,
+            doc,
+            step.timeoutMs ?? WAIT_TIMEOUT_MS,
+            isStale
+          );
+          if (isStale()) return abandoned(i);
           if (!found) {
             return {
               outcome: "failed",
@@ -329,7 +364,11 @@
           }
           continue;
         }
-        const el = doc.querySelector(step.selector);
+        let el = doc.querySelector(step.selector);
+        if (!el && i === 0) {
+          el = await waitForElement(step.selector, doc, WAIT_TIMEOUT_MS, isStale);
+          if (isStale()) return abandoned(i);
+        }
         if (!el) {
           return {
             outcome: "failed",
@@ -355,6 +394,7 @@
               submitted: false
             };
           }
+          if (isStale()) return abandoned(i);
           setNativeValue(el, step.value);
           continue;
         }
@@ -367,6 +407,7 @@
             submitted: false
           };
         }
+        if (isStale()) return abandoned(i);
         clickable.click();
         if (step.isSubmit) {
           return { outcome: "completed", stepIndex: i + 1, submitted: true };
@@ -698,6 +739,15 @@
     mount() {
       if (!this.host.isConnected) document.body.appendChild(this.host);
     }
+    /**
+     * Detach the host entirely. `clear()` empties the layer but leaves the host
+     * in the document; navigating an SPA onto a page this script has nothing to
+     * do with should leave no trace of it at all.
+     */
+    unmount() {
+      this.clear();
+      this.host.remove();
+    }
     clear() {
       this.settlePending?.(null);
       this.settlePending = null;
@@ -986,11 +1036,11 @@
   };
 
   // src/main.ts
+  var NAV_EVENT = "autologin-nav";
+  var HISTORY_PATCHED = "__autoLoginHistoryPatched";
   void (async function main() {
     const storage = createStorage();
     let store = await storage.load();
-    const url = location.href;
-    const matches = store.accounts.filter((account) => accountMatchesPage(account, url));
     const ui = new Ui({
       onRun: (account) => void run(account, { manual: true }),
       onOpenPanel: () => openPanel()
@@ -1002,30 +1052,80 @@
     storage.subscribe((updated) => {
       store = updated;
     });
-    if (matches.length === 0 && !storage.lastError) {
-      if (store.run) void persist({ ...store, run: null });
-      return;
+    let navGeneration = 0;
+    let lastRunKey = null;
+    let syncing = Promise.resolve();
+    function syncToPage(opts) {
+      syncing = syncing.then(() => applySync(opts));
+      return syncing;
     }
-    ui.mount();
-    if (storage.lastError) {
-      ui.toast(storage.lastError, "error", 1e4);
-      return;
+    async function applySync({ initial }) {
+      const generation = navGeneration;
+      const isStale = () => generation !== navGeneration;
+      ui.clear();
+      const decision = decideForPage(store, location.href, storage.lastError);
+      if (decision.kind === "dormant") {
+        lastRunKey = null;
+        ui.unmount();
+        if (initial && store.run) await persist({ ...store, run: null });
+        return;
+      }
+      ui.mount();
+      if (decision.kind === "error") {
+        lastRunKey = null;
+        ui.toast(decision.message, "error", 1e4);
+        return;
+      }
+      if (decision.kind === "trigger") {
+        lastRunKey = null;
+        ui.renderTrigger(decision.matches, decision.blockedReason);
+        return;
+      }
+      if (decision.key === lastRunKey) {
+        ui.renderTrigger([decision.account]);
+        return;
+      }
+      lastRunKey = decision.key;
+      await run(decision.account, { manual: false }, isStale);
     }
-    const blocked = matches.length === 1 && isAutoRunBlocked(store.run, matches[0].id);
-    if (matches.length === 1 && !blocked) {
-      void run(matches[0], { manual: false });
-    } else {
-      ui.renderTrigger(
-        matches,
-        blocked ? `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts \u2014 click to try again.` : void 0
-      );
-    }
+    (function patchHistory(history) {
+      if (Object.prototype.hasOwnProperty.call(history, HISTORY_PATCHED)) return;
+      Object.defineProperty(history, HISTORY_PATCHED, { value: true });
+      const fire = () => {
+        window.dispatchEvent(new Event(NAV_EVENT));
+      };
+      const push = history.pushState.bind(history);
+      const replace = history.replaceState.bind(history);
+      history.pushState = function(...args) {
+        const result = push(...args);
+        fire();
+        return result;
+      };
+      history.replaceState = function(...args) {
+        const result = replace(...args);
+        fire();
+        return result;
+      };
+      window.addEventListener("popstate", fire);
+      window.addEventListener("hashchange", fire);
+    })(window.history);
+    let navTimer;
+    let currentUrl = location.href;
+    window.addEventListener(NAV_EVENT, () => {
+      if (location.href !== currentUrl) {
+        currentUrl = location.href;
+        navGeneration++;
+      }
+      clearTimeout(navTimer);
+      navTimer = setTimeout(() => void syncToPage({ initial: false }), NAV_DEBOUNCE_MS);
+    });
+    await syncToPage({ initial: true });
     async function persist(next) {
       store = next;
       const result = await storage.save(next);
       if (!result.written) ui.toast(result.reason ?? "Changes could not be saved.", "error", 1e4);
     }
-    async function run(account, opts) {
+    async function run(account, opts, isStale = () => false) {
       ui.clear();
       const steps = stepsForPage(account, location.href);
       if (steps.length === 0) {
@@ -1034,7 +1134,8 @@
         return;
       }
       const attempts = seedAttempts(store.run, account.id, opts.manual);
-      const report = await runSteps(steps, account.autoSubmit, document);
+      const report = await runSteps(steps, account.autoSubmit, document, isStale);
+      if (report.outcome === "abandoned") return;
       if (report.submitted) {
         await persist({
           ...store,
