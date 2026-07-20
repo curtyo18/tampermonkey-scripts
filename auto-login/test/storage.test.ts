@@ -32,8 +32,15 @@ function validStore(): Store {
       {
         id: 'a1',
         name: 'dev1 payments acc',
-        pattern: 'https://example.com/*',
-        steps: [{ id: 's1', kind: 'fill', selector: '#user', value: 'alice' }],
+        steps: [
+          {
+            id: 's1',
+            kind: 'fill',
+            selector: '#user',
+            pagePattern: 'https://example.com/login*',
+            value: 'alice',
+          },
+        ],
         autoSubmit: true,
         createdAt: 1,
         updatedAt: 2,
@@ -122,8 +129,8 @@ describe('parseStore', () => {
     expect(parseStore(JSON.stringify(bad)).store.accounts).toHaveLength(0);
   });
 
-  it('drops an unusable run cursor without locking the store read-only', () => {
-    const bad = { ...validStore(), run: { accountId: 'a1', stepIndex: 'abc' } };
+  it('drops an unusable run state without locking the store read-only', () => {
+    const bad = { ...validStore(), run: { accountId: 'a1', attempts: 'abc' } };
     const result = parseStore(JSON.stringify(bad));
     expect(result.store.run).toBeNull();
     expect(result.readOnly).toBe(false);

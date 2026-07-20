@@ -16,6 +16,12 @@ export interface Step {
   id: string;
   kind: StepKind;
   selector: string;
+  /**
+   * URL pattern of the page this step was recorded on. Glob by default;
+   * `/pattern/flags` is treated as a regex. Steps are grouped by page at run
+   * time, which is what makes multi-page flows work — see docs/adr/0004.
+   */
+  pagePattern: string;
   /** `fill` only. */
   value?: string;
   /** Marks the terminal login action. At most one step per account config. */
@@ -28,8 +34,6 @@ export interface AccountConfig {
   id: string;
   /** Free text, e.g. "dev1 payments acc". */
   name: string;
-  /** Glob by default; `/pattern/flags` is treated as a regex. */
-  pattern: string;
   steps: Step[];
   autoSubmit: boolean;
   createdAt: number;
@@ -41,19 +45,23 @@ export interface RecordingSession {
   startedAt: number;
 }
 
-export interface RunCursor {
+/**
+ * Tracks consecutive automatic submits for one account so a misconfigured
+ * config cannot loop bad credentials into a lockout. Deliberately NOT a step
+ * cursor: a run's position is derived by matching the current URL against each
+ * step's pagePattern, so there is nothing to keep in sync across navigations.
+ */
+export interface RunState {
   accountId: string;
-  stepIndex: number;
-  startedAt: number;
-  /** Incremented each time a run reaches the submit step. */
   attempts: number;
+  updatedAt: number;
 }
 
 export interface Store {
   schemaVersion: number;
   accounts: AccountConfig[];
   recording: RecordingSession | null;
-  run: RunCursor | null;
+  run: RunState | null;
 }
 
 export interface SaveResult {
@@ -96,6 +104,8 @@ export interface RunReport {
   /** The failing/halting step's index — except on 'completed', where it is steps.length. */
   stepIndex: number;
   message?: string;
+  /** Whether the submit step actually fired. Drives the lockout counter. */
+  submitted: boolean;
 }
 
 export function newId(): string {

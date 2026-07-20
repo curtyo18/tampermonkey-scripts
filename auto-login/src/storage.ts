@@ -3,7 +3,7 @@ import {
   STORE_KEY,
   type AccountConfig,
   type RecordingSession,
-  type RunCursor,
+  type RunState,
   type SaveResult,
   type StepKind,
   type StorageAdapter,
@@ -39,6 +39,7 @@ function isStep(value: unknown): boolean {
   return (
     typeof value.id === 'string' &&
     typeof value.selector === 'string' &&
+    typeof value.pagePattern === 'string' &&
     STEP_KINDS.includes(value.kind as StepKind)
   );
 }
@@ -53,7 +54,6 @@ export function isAccount(value: unknown): value is AccountConfig {
   return (
     typeof value.id === 'string' &&
     typeof value.name === 'string' &&
-    typeof value.pattern === 'string' &&
     typeof value.autoSubmit === 'boolean' &&
     Array.isArray(value.steps) &&
     value.steps.every(isStep)
@@ -64,13 +64,12 @@ function isRecordingSession(value: unknown): value is RecordingSession {
   return isRecord(value) && typeof value.accountId === 'string' && typeof value.startedAt === 'number';
 }
 
-function isRunCursor(value: unknown): value is RunCursor {
+function isRunState(value: unknown): value is RunState {
   return (
     isRecord(value) &&
     typeof value.accountId === 'string' &&
-    Number.isInteger(value.stepIndex) &&
-    typeof value.startedAt === 'number' &&
-    typeof value.attempts === 'number'
+    Number.isInteger(value.attempts) &&
+    typeof value.updatedAt === 'number'
   );
 }
 
@@ -119,10 +118,10 @@ export function parseStore(raw: string | undefined): ParseResult {
     store: {
       schemaVersion: SCHEMA_VERSION,
       accounts: (parsed.accounts ?? []).filter(isAccount),
-      // A bad cursor or session is transient state, not user data worth
+      // A bad run state or session is transient, not user data worth
       // preserving — drop it rather than locking the whole store read-only.
       recording: isRecordingSession(parsed.recording) ? parsed.recording : null,
-      run: isRunCursor(parsed.run) ? parsed.run : null,
+      run: isRunState(parsed.run) ? parsed.run : null,
     },
     readOnly: false,
     error: null,
