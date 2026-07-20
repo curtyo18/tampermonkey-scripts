@@ -56,9 +56,18 @@ export interface Store {
   run: RunCursor | null;
 }
 
+export interface SaveResult {
+  written: boolean;
+  /** Why the write was suppressed, when it was. */
+  reason?: string;
+}
+
 export interface StorageAdapter {
   load(): Promise<Store>;
-  save(store: Store): Promise<void>;
+  /** Suppressed while the store is read-only — check `written` before claiming success. */
+  save(store: Store): Promise<SaveResult>;
+  /** Discard an unreadable store and resume writing. The user's explicit escape hatch. */
+  reset(store: Store): Promise<SaveResult>;
   subscribe(onRemoteChange: (store: Store) => void): void;
 }
 
