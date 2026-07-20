@@ -76,6 +76,12 @@ export interface SelectorCandidate {
   /** Human-readable reason this candidate was proposed, e.g. "id" or "name attribute". */
   label: string;
   matchCount: number;
+  /**
+   * Whether this selector actually resolves to the element the user clicked.
+   * Uniqueness alone is not enough — a duplicated id matches exactly one
+   * element and can still be the wrong one.
+   */
+  resolvesToPicked: boolean;
 }
 
 /**
