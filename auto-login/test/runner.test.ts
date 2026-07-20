@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   accountMatchesPage,
+  decideForPage,
   isAutoRunBlocked,
   runSteps,
   seedAttempts,
@@ -11,9 +12,13 @@ import {
 import {
   ATTEMPTS_WINDOW_MS,
   MAX_SUBMIT_ATTEMPTS,
+  SCHEMA_VERSION,
+  WAIT_TIMEOUT_MS,
   type AccountConfig,
+  type RunReport,
   type RunState,
   type Step,
+  type Store,
 } from '../src/types';
 
 const LOGIN = 'https://example.com/login';
@@ -38,6 +43,10 @@ function account(steps: Step[], autoSubmit = true): AccountConfig {
     createdAt: 0,
     updatedAt: 0,
   };
+}
+
+function store(accounts: AccountConfig[], run: RunState | null = null): Store {
+  return { schemaVersion: SCHEMA_VERSION, accounts, run };
 }
 
 beforeEach(() => {
@@ -219,11 +228,78 @@ describe('runSteps', () => {
   });
 
   it('fails with the offending step index and selector when an element is missing', async () => {
-    const report = await runSteps([step({ selector: '#missing', value: 'x' })], true, document);
+    vi.useFakeTimers();
+    try {
+      const pending = runSteps([step({ selector: '#missing', value: 'x' })], true, document);
+      await vi.advanceTimersByTimeAsync(WAIT_TIMEOUT_MS + 1);
+      const report = await pending;
 
-    expect(report.outcome).toBe('failed');
-    expect(report.stepIndex).toBe(0);
-    expect(report.message).toContain('#missing');
+      expect(report.outcome).toBe('failed');
+      expect(report.stepIndex).toBe(0);
+      expect(report.message).toContain('#missing');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits for the first step element, which an SPA may not have rendered yet', async () => {
+    const pending = runSteps([step({ selector: '#late', value: 'alice' })], true, document);
+
+    // Nothing there when the run starts; the route renders it afterwards.
+    expect(document.querySelector('#late')).toBeNull();
+    document.body.innerHTML = '<input id="late">';
+
+    expect((await pending).outcome).toBe('completed');
+    expect(document.querySelector<HTMLInputElement>('#late')!.value).toBe('alice');
+  });
+
+  /**
+   * Settling without the clock being advanced is the assertion: it is what
+   * distinguishes "returned straight away" from "waited", without measuring
+   * wall-clock time.
+   */
+  async function settleWithoutWaiting(run: Promise<RunReport>): Promise<RunReport | null> {
+    let report: RunReport | null = null;
+    void run.then((r) => {
+      report = r;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    return report;
+  }
+
+  it('does not wait on steps after the first — by then the page has proven itself present', async () => {
+    document.body.innerHTML = '<input id="u">';
+    vi.useFakeTimers();
+    try {
+      const report = await settleWithoutWaiting(
+        runSteps(
+          [
+            step({ selector: '#u', value: 'x' }),
+            step({ id: 's2', selector: '#missing', value: 'y' }),
+          ],
+          true,
+          document,
+        ),
+      );
+
+      expect(report).toMatchObject({ outcome: 'failed', stepIndex: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a malformed first-step selector immediately rather than after the timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const report = await settleWithoutWaiting(
+        runSteps([step({ selector: 'input[name=', value: 'x' })], true, document),
+      );
+
+      expect(report).toMatchObject({ outcome: 'failed' });
+      expect(report!.message).toContain('input[name=');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails rather than typing an empty string when a fill step has no value', async () => {
@@ -265,14 +341,21 @@ describe('runSteps', () => {
 
   it('stops at the failing step and does not run later steps', async () => {
     document.body.innerHTML = '<input id="p">';
-    await runSteps(
-      [
-        step({ id: 's1', selector: '#missing', value: 'x' }),
-        step({ id: 's2', selector: '#p', value: 'later' }),
-      ],
-      true,
-      document,
-    );
+    vi.useFakeTimers();
+    try {
+      const pending = runSteps(
+        [
+          step({ id: 's1', selector: '#missing', value: 'x' }),
+          step({ id: 's2', selector: '#p', value: 'later' }),
+        ],
+        true,
+        document,
+      );
+      await vi.advanceTimersByTimeAsync(WAIT_TIMEOUT_MS + 1);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(document.querySelector<HTMLInputElement>('#p')!.value).toBe('');
   });
@@ -301,7 +384,7 @@ describe('runSteps', () => {
     vi.useFakeTimers();
     try {
       const pending = runSteps([step({ kind: 'waitFor', selector: '#never' })], true, document);
-      await vi.advanceTimersByTimeAsync(8001);
+      await vi.advanceTimersByTimeAsync(WAIT_TIMEOUT_MS + 1);
 
       expect((await pending).outcome).toBe('failed');
     } finally {
@@ -313,6 +396,151 @@ describe('runSteps', () => {
     expect(await runSteps([], true, document)).toMatchObject({
       outcome: 'completed',
       submitted: false,
+    });
+  });
+});
+
+/**
+ * The page can change underneath a run — the first step waits up to 8s, and a
+ * user or the app itself can navigate during it. Nothing may be typed or
+ * clicked once that has happened: the target is no longer the form the run was
+ * started for.
+ */
+describe('runSteps cancellation', () => {
+  it('does not fill a field once the page has moved on', async () => {
+    document.body.innerHTML = '<input id="u">';
+
+    const report = await runSteps([step({ selector: '#u', value: 'hunter2' })], true, document, () => true);
+
+    expect(report.outcome).toBe('abandoned');
+    expect(document.querySelector<HTMLInputElement>('#u')!.value).toBe('');
+  });
+
+  it('does not submit when an earlier step triggered the navigation', async () => {
+    document.body.innerHTML = '<input id="u"><button id="go"></button>';
+    const clicked = vi.fn();
+    document.querySelector('#go')!.addEventListener('click', clicked);
+
+    // Identity-first forms really do route away on the username field's input
+    // event, which is what makes this the realistic shape of the bug.
+    let navigated = false;
+    document.querySelector('#u')!.addEventListener('input', () => {
+      navigated = true;
+    });
+
+    const report = await runSteps(
+      [
+        step({ selector: '#u', value: 'hunter2' }),
+        step({ id: 's2', kind: 'click', selector: '#go', isSubmit: true }),
+      ],
+      true,
+      document,
+      () => navigated,
+    );
+
+    expect(report.outcome).toBe('abandoned');
+    expect(report.submitted).toBe(false);
+    expect(clicked).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting rather than resolving against the next route’s markup', async () => {
+    let navigated = false;
+    const pending = waitForElement('#u', document, WAIT_TIMEOUT_MS, () => navigated);
+
+    // The new route rendering is itself a childList mutation, so the observer
+    // wakes — and must not hand back this element.
+    navigated = true;
+    document.body.innerHTML = '<input id="u">';
+
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('runs normally when nothing navigates', async () => {
+    document.body.innerHTML = '<input id="u">';
+
+    const report = await runSteps([step({ selector: '#u', value: 'alice' })], true, document, () => false);
+
+    expect(report.outcome).toBe('completed');
+    expect(document.querySelector<HTMLInputElement>('#u')!.value).toBe('alice');
+  });
+});
+
+describe('decideForPage', () => {
+  const NOW = 1_000_000;
+  const loginStep = step({ id: 'st1', pagePattern: 'https://example.com/login*' });
+
+  it('is dormant when no account matches, so an unrelated page is untouched', () => {
+    const decision = decideForPage(store([account([loginStep])]), OTP, null, NOW);
+
+    expect(decision).toEqual({ kind: 'dormant' });
+  });
+
+  it('is not dormant when the store is unreadable, which also yields zero matches', () => {
+    const decision = decideForPage(store([]), OTP, 'config unreadable', NOW);
+
+    expect(decision).toMatchObject({ kind: 'error', message: 'config unreadable' });
+  });
+
+  it('reports the storage error ahead of running, even on a matching page', () => {
+    const decision = decideForPage(store([account([loginStep])]), LOGIN, 'config unreadable', NOW);
+
+    expect(decision.kind).toBe('error');
+  });
+
+  it('runs the single matching account with only that page’s steps', () => {
+    const otpStep = step({ id: 'st2', pagePattern: 'https://example.com/otp*' });
+    const decision = decideForPage(store([account([loginStep, otpStep])]), LOGIN, null, NOW);
+
+    expect(decision).toMatchObject({ kind: 'run', steps: [loginStep] });
+  });
+
+  it('offers a chooser instead of running when several accounts match', () => {
+    const a = { ...account([loginStep]), id: 'a1' };
+    const b = { ...account([loginStep]), id: 'a2' };
+    const decision = decideForPage(store([a, b]), LOGIN, null, NOW);
+
+    expect(decision).toMatchObject({ kind: 'trigger' });
+    expect(decision.kind === 'trigger' && decision.matches).toHaveLength(2);
+  });
+
+  it('offers a trigger with a reason rather than running once the lockout has armed', () => {
+    const run: RunState = { accountId: 'a1', attempts: MAX_SUBMIT_ATTEMPTS, updatedAt: NOW };
+    const decision = decideForPage(store([account([loginStep])], run), LOGIN, null, NOW);
+
+    expect(decision.kind).toBe('trigger');
+    expect(decision.kind === 'trigger' && decision.blockedReason).toMatch(/paused/i);
+  });
+
+  it('runs again once the attempts window has passed', () => {
+    const run: RunState = { accountId: 'a1', attempts: MAX_SUBMIT_ATTEMPTS, updatedAt: NOW };
+    const later = NOW + ATTEMPTS_WINDOW_MS + 1;
+    const decision = decideForPage(store([account([loginStep])], run), LOGIN, null, later);
+
+    expect(decision.kind).toBe('run');
+  });
+
+  /**
+   * The key is what stops an auto-submit repeating: a host app rewriting the
+   * query string is not a new page, and before this the raw href was compared,
+   * so every analytics replaceState re-ran the login.
+   */
+  describe('logical page key', () => {
+    it('is unchanged by a query string the pattern still matches', () => {
+      const withQuery = decideForPage(store([account([loginStep])]), `${LOGIN}?tab=sso`, null, NOW);
+      const plain = decideForPage(store([account([loginStep])]), LOGIN, null, NOW);
+
+      expect(withQuery.kind === 'run' && plain.kind === 'run' && withQuery.key).toBe(
+        plain.kind === 'run' ? plain.key : null,
+      );
+    });
+
+    it('differs for a different page’s block of steps', () => {
+      const otpStep = step({ id: 'st2', pagePattern: 'https://example.com/otp*' });
+      const acct = account([loginStep, otpStep]);
+      const login = decideForPage(store([acct]), LOGIN, null, NOW);
+      const otp = decideForPage(store([acct]), OTP, null, NOW);
+
+      expect(login.kind === 'run' && otp.kind === 'run' && login.key === otp.key).toBe(false);
     });
   });
 });

@@ -1,8 +1,10 @@
 export const STORE_KEY = 'autoLogin.store.v1';
 export const SCHEMA_VERSION = 1;
 
-/** Default ceiling for a `waitFor` step. */
+/** Default ceiling for a `waitFor` step, and for the first step of a page block. */
 export const WAIT_TIMEOUT_MS = 8000;
+/** A single SPA navigation often writes history several times; settle before re-evaluating. */
+export const NAV_DEBOUNCE_MS = 300;
 /** Consecutive automatic submits are only counted together inside this window. */
 export const ATTEMPTS_WINDOW_MS = 120_000;
 /** Guards against an auto-submitting account config looping a bad credential into a lockout. */
@@ -90,7 +92,12 @@ export interface SelectorCandidate {
  * Position in a flow is re-derived from the URL on the next load, never
  * carried across — see docs/adr/0004.
  */
-export type RunOutcome = 'completed' | 'halted-before-submit' | 'failed';
+/**
+ * 'abandoned' means the page moved on mid-run and the remaining steps were
+ * deliberately not executed. It is not a failure and must not be reported as
+ * one: the sync for the new page has already decided what happens there.
+ */
+export type RunOutcome = 'completed' | 'halted-before-submit' | 'failed' | 'abandoned';
 
 export interface RunReport {
   outcome: RunOutcome;
@@ -100,6 +107,27 @@ export interface RunReport {
   /** Whether the submit step actually fired. Drives the lockout counter. */
   submitted: boolean;
 }
+
+/**
+ * What should happen on the page currently being looked at. Deliberately a
+ * plain value with no DOM in it: the decision is the part worth testing, and
+ * keeping it separate from applying the decision is what makes that possible.
+ */
+export type PageDecision =
+  | { kind: 'dormant' }
+  | { kind: 'error'; message: string }
+  | { kind: 'trigger'; matches: AccountConfig[]; blockedReason?: string }
+  | {
+      kind: 'run';
+      account: AccountConfig;
+      steps: Step[];
+      /**
+       * Identifies the logical page, as opposed to the URL. A host app that
+       * rewrites the query string or hash without changing which steps apply
+       * keeps the same key, and an auto-run is not repeated for it.
+       */
+      key: string;
+    };
 
 export function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
