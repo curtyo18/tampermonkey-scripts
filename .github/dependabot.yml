@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # The workflow pins actions to commit SHAs, which does not rot loudly — a pin
+  # just quietly ages. This is the half that makes pinning better than tracking
+  # a mutable tag rather than worse: Dependabot rewrites the SHA and the trailing
+  # `# vX.Y.Z` comment together, so the pin stays current and stays readable.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+# Deliberately not covered here:
+#
+# npm. All three projects (auto-login, jira/jira-ticket-extractor,
+# gitlab/gitlab-code-search) carry devDependencies only, but one of them is
+# esbuild, which produces the committed *.user.js bundle that CI's drift check
+# requires to be byte-identical to source. An esbuild bump changes those bytes,
+# so every such Dependabot PR would arrive red and need a manual rebuild commit
+# before it could merge. That is a routine worth choosing on purpose, not a
+# side effect of adding an ecosystem here.
+#
+# gitleaks. Pinned by version + SHA256 in ci.yml, which Dependabot cannot parse.
+# Bumping it means editing both the version and the checksum, by hand.

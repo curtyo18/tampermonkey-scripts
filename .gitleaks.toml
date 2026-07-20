@@ -1,0 +1,44 @@
+# gitleaks configuration
+#
+# Extends the upstream default ruleset rather than replacing it — the defaults
+# cover the generic cases (cloud keys, tokens, private keys) and get better over
+# time as gitleaks is bumped. Everything below is repo-specific on top of that.
+
+[extend]
+useDefault = true
+
+# Auto Login export format. Per docs/adr/0003, a share string carries every
+# stored credential in recoverable form: `AL1:` + base64url(deflate-raw(JSON)),
+# or `AL1U:` + base64url(JSON) where CompressionStream is unavailable. Base64
+# and deflate are encodings, not encryption, so a share string pasted into a
+# fixture, README, or issue body is a plaintext credential dump that reads as
+# ordinary text — no generic rule would fire on it.
+#
+# The length floor keeps this off the prefix constants themselves
+# (`SHARE_PREFIX = 'AL1:'` in src/share.ts and its build output): a real share
+# string encodes at least one full account object and runs to hundreds of
+# base64url characters, while the source literals are followed by a quote. The
+# smallest share string a single account can produce is ~106 chars, so the floor
+# has a wide margin. Deliberately no `\b` anchor: `AL1U?:` is already
+# distinctive, and a leading word boundary would let `share_AL1:<body>` through.
+[[rules]]
+id = "auto-login-share-string"
+description = "Auto Login share string (credentials in recoverable plaintext, see docs/adr/0003)"
+regex = '''AL1U?:[A-Za-z0-9_-]{40,}'''
+keywords = ["al1:", "al1u:"]
+
+# Known limits of the rule above — a line-oriented regex cannot reach these:
+#
+#   - A share string split across lines (wrapped narrower than ~44 columns) or
+#     built by concatenation (`"AL1:" + body`). Wrapping at 72 columns still fires.
+#   - A share string inside a binary, image, or archive.
+#
+# Not covered at all: the *stored* form. Per docs/adr/0003 the store is plaintext
+# JSON, but a credential there is `value` on a `fill` step (see src/types.ts) —
+# there is no `password` key to key on, and a filled password is textually
+# identical to a filled username. A rule keyed on the store shape
+# (`pagePattern` + `value`) matches the test fixtures in auto-login/test/ —
+# runner.test.ts alone has `value: 'hunter2'` — so it would need an allowlist
+# over that directory, which would then blind this scan to a real share string
+# committed into a fixture. That is one of the leak paths issue #7 named, so the
+# trade is a bad one and the gap is documented here instead.
