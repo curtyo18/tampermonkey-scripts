@@ -88,23 +88,29 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          curl -fsSL --retry 3 -o gitleaks.tar.gz \
+          curl -fsSL --retry 3 --retry-all-errors -o gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
 
       # Scans full history rather than just the PR range. History is clean as of
-      # this commit (verified by hand across all 62 commits), so this is not a
-      # check that arrives red. Computing a base..head range is the part that
-      # tends to break quietly — a wrong base scans nothing and still exits 0 —
-      # and at ~1s for this repo the whole-history scan buys immunity to that
-      # for no real time. In practice it only ever fails on what a diff adds.
+      # this commit (verified across all 64 commits), so this is not a check that
+      # arrives red. Computing a base..head range is the part that tends to break
+      # quietly — a wrong base scans nothing and still exits 0 — and at ~1s for
+      # this repo the whole-history scan buys immunity to that for no real time.
+      #
+      # Know the failure mode before you hit it: a hit anywhere in history fails
+      # this job on EVERY branch, and deleting the secret in a later commit does
+      # not clear it — the blob is still reachable. That is deliberate and
+      # matches the repo's git-workflow standard, which calls for a history
+      # rewrite on a leak rather than a cleanup commit. If a rewrite genuinely
+      # has to be deferred, `--baseline-path` or a `.gitleaksignore` entry
+      # unblocks merges without pretending the secret is gone.
       #
       # --redact keeps the matched secret out of the public build log.
       - name: gitleaks
         run: |
-          "$RUNNER_TEMP/gitleaks" detect \
-            --source . \
+          "$RUNNER_TEMP/gitleaks" git . \
             --config .gitleaks.toml \
             --redact \
             --no-banner \
