@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the same branch supersedes any run still in flight, except on
+# master — cancelling there would leave a merged commit with no CI result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  check:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - auto-login
+          - jira/jira-ticket-extractor
+          - gitlab/gitlab-code-search
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # The committed bundle is what @downloadURL serves straight off master, so a
+      # stale one ships broken code to anyone who auto-updates. Rebuild and require
+      # the result to be byte-identical to what was committed.
+      #
+      # Gate on `git status --porcelain`, not `git diff`: git diff only compares
+      # tracked files, so a build output that was renamed or never committed is
+      # invisible to it and the check passes while the stale bundle keeps shipping.
+      - name: Committed bundle matches source
+        run: |
+          npm run build
+          drift=$(git status --porcelain -- '*.user.js')
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            git diff -- '*.user.js'
+            echo "::error::Committed bundle is out of date. Run 'npm ci && npm run build' in ${{ matrix.project }} and commit the result."
+            exit 1
+          fi
