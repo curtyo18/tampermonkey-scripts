@@ -1,0 +1,25 @@
+# gitleaks configuration
+#
+# Extends the upstream default ruleset rather than replacing it — the defaults
+# cover the generic cases (cloud keys, tokens, private keys) and get better over
+# time as gitleaks is bumped. Everything below is repo-specific on top of that.
+
+[extend]
+useDefault = true
+
+# Auto Login export format. Per docs/adr/0003, a share string carries every
+# stored credential in recoverable form: `AL1:` + base64url(deflate-raw(JSON)),
+# or `AL1U:` + base64url(JSON) where CompressionStream is unavailable. Base64
+# and deflate are encodings, not encryption, so a share string pasted into a
+# fixture, README, or issue body is a plaintext credential dump that reads as
+# ordinary text — no generic rule would fire on it.
+#
+# The length floor keeps this off the prefix constants themselves
+# (`SHARE_PREFIX = 'AL1:'` in src/share.ts and its build output): a real share
+# string encodes at least one full account object and runs to hundreds of
+# base64url characters, while the source literals are followed by a quote.
+[[rules]]
+id = "auto-login-share-string"
+description = "Auto Login share string (credentials in recoverable plaintext, see docs/adr/0003)"
+regex = '''\bAL1U?:[A-Za-z0-9_-]{40,}'''
+keywords = ["al1:", "al1u:"]
