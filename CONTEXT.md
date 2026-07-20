@@ -9,8 +9,8 @@ Canonical vocabulary for this repo. Term → meaning only; no implementation det
 
 ## Auto Login
 
-- **Account config** — one saved, named login recipe: a friendly name, a URL pattern, and an ordered list of steps. Example name: `dev1 payments acc`. Account configs are a flat list; any grouping is a naming convention, not a structure.
-- **URL pattern** — the string an account config matches pages against. A glob by default (`*` and `?` wildcards); treated as a regular expression when written as `/…/flags`.
+- **Account config** — one saved, named login recipe: a friendly name and an ordered list of steps. Example name: `dev1 payments acc`. An account applies to a page when any of its steps does. Account configs are a flat list; any grouping is a naming convention, not a structure.
+- **URL pattern** — the string a step matches pages against. A glob by default (`*` and `?` wildcards); treated as a regular expression when written as `/…/flags`.
 - **Step** — one action within an account config. Exactly one of: `fill` (put a value into an element), `click` (activate an element), `waitFor` (block until an element exists).
 - **Submit step** — the step flagged as the one that actually logs you in. The terminal action of a flow, distinguished from intermediate `click` steps such as "Next".
 - **Auto-submit** — per-account setting controlling whether a run executes the submit step or halts just before it.
@@ -19,6 +19,10 @@ Canonical vocabulary for this repo. Term → meaning only; no implementation det
 - **Picker** — the mode where clicking an element on the page captures a selector for it instead of activating it.
 - **Selector candidate** — one of several selector strings the picker proposes for a picked element, ranked by expected stability and annotated with how many elements it currently matches.
 - **Recording session** — persisted state marking that steps are actively being captured into a given account config. Survives page navigation so multi-page flows can be recorded in one pass.
-- **Run cursor** — persisted state marking that a run is partway through an account config's steps. Survives page navigation so a flow can resume after a step causes the page to load.
+- **Step block** — the steps of one account config that belong to a single page: the first contiguous run whose page patterns match the current URL.
 - **Share string** — the entire set of account configs encoded as one compact, copy-pasteable line of text. Always carries credentials in recoverable form, so it is sensitive material.
 - **Import preview** — the confirmation screen listing every incoming account config from a share string and whether it is new or collides with an existing one, before anything is written.
+
+### Superseded
+
+- **Run cursor** — *removed.* Position in a flow is derived by matching the current URL against each step's page pattern, not remembered across navigations. See [[0004-page-scoped-steps-instead-of-a-run-cursor]].
