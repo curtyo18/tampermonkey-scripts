@@ -1,0 +1,17 @@
+{
+  "name": "auto-login",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0",
+    "jsdom": "^24.0.0"
+  }
+}
