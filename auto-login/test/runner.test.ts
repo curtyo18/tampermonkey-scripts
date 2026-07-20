@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   accountMatchesPage,
+  isAutoRunBlocked,
   runSteps,
+  seedAttempts,
   setNativeValue,
   stepsForPage,
   waitForElement,
 } from '../src/runner';
-import type { AccountConfig, Step } from '../src/types';
+import {
+  ATTEMPTS_WINDOW_MS,
+  MAX_SUBMIT_ATTEMPTS,
+  type AccountConfig,
+  type RunState,
+  type Step,
+} from '../src/types';
 
 const LOGIN = 'https://example.com/login';
 const OTP = 'https://example.com/otp';
@@ -305,6 +313,58 @@ describe('runSteps', () => {
     expect(await runSteps([], true, document)).toMatchObject({
       outcome: 'completed',
       submitted: false,
+    });
+  });
+});
+
+describe('lockout guard', () => {
+  const NOW = 1_000_000;
+
+  function runState(overrides: Partial<RunState> = {}): RunState {
+    return { accountId: 'a1', attempts: 0, updatedAt: NOW, ...overrides };
+  }
+
+  describe('isAutoRunBlocked', () => {
+    it('does not block with no run state', () => {
+      expect(isAutoRunBlocked(null, 'a1', NOW)).toBe(false);
+    });
+
+    it('blocks once the attempt limit is reached', () => {
+      expect(isAutoRunBlocked(runState({ attempts: MAX_SUBMIT_ATTEMPTS - 1 }), 'a1', NOW)).toBe(false);
+      expect(isAutoRunBlocked(runState({ attempts: MAX_SUBMIT_ATTEMPTS }), 'a1', NOW)).toBe(true);
+    });
+
+    it('does not block a different account', () => {
+      expect(isAutoRunBlocked(runState({ attempts: MAX_SUBMIT_ATTEMPTS }), 'a2', NOW)).toBe(false);
+    });
+
+    it('releases once the window has passed', () => {
+      const stale = runState({ attempts: MAX_SUBMIT_ATTEMPTS });
+      expect(isAutoRunBlocked(stale, 'a1', NOW + ATTEMPTS_WINDOW_MS + 1)).toBe(false);
+    });
+  });
+
+  describe('seedAttempts', () => {
+    it('starts a manual run at zero however high the count is', () => {
+      expect(seedAttempts(runState({ attempts: 99 }), 'a1', true, NOW)).toBe(0);
+    });
+
+    it('carries the count forward for an automatic run', () => {
+      expect(seedAttempts(runState({ attempts: 2 }), 'a1', false, NOW)).toBe(2);
+    });
+
+    it('starts at zero for a different account', () => {
+      expect(seedAttempts(runState({ attempts: 2 }), 'a2', false, NOW)).toBe(0);
+    });
+
+    it('does not re-arm the guard from a count outside the window', () => {
+      // Without the freshness check the guard released, then immediately
+      // re-blocked by seeding 3 and persisting 4.
+      const stale = runState({ attempts: MAX_SUBMIT_ATTEMPTS });
+      const later = NOW + ATTEMPTS_WINDOW_MS + 1;
+
+      expect(isAutoRunBlocked(stale, 'a1', later)).toBe(false);
+      expect(seedAttempts(stale, 'a1', false, later)).toBe(0);
     });
   });
 });

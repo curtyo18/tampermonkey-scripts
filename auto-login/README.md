@@ -95,6 +95,7 @@ offers **Discard unreadable config and start fresh** as the way out.
     npm run typecheck
     npm run build     # bundles src/ into auto-login.user.js
 
-`src/storage.ts` is the only module that touches a `GM_*` API, behind an async
-interface, so a Chrome-extension port is a one-file swap —
+`src/storage.ts` is the only module that touches GM storage, behind an async
+interface, so a Chrome-extension port is a one-file swap for storage plus the
+single `GM_registerMenuCommand` call site in `main.ts` —
 [`docs/adr/0002`](../docs/adr/0002-async-platform-neutral-storage-adapter.md).

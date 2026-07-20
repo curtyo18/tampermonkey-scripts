@@ -5,6 +5,7 @@
 // @description  One-click credential fill for login pages you configure through an injected UI. Dev/test accounts only.
 // @author       Curt Radford
 // @match        *://*/*
+// @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -227,12 +228,13 @@
   var STORE_KEY = "autoLogin.store.v1";
   var SCHEMA_VERSION = 1;
   var WAIT_TIMEOUT_MS = 8e3;
+  var ATTEMPTS_WINDOW_MS = 12e4;
   var MAX_SUBMIT_ATTEMPTS = 3;
   function newId() {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  // src/recording.ts
+  // src/steps.ts
   function appendStep(store, accountId, step) {
     return {
       ...store,
@@ -249,6 +251,16 @@
   }
 
   // src/runner.ts
+  function isFresh(run, accountId, now) {
+    return !!run && run.accountId === accountId && now - run.updatedAt <= ATTEMPTS_WINDOW_MS;
+  }
+  function isAutoRunBlocked(run, accountId, now = Date.now()) {
+    return isFresh(run, accountId, now) && run.attempts >= MAX_SUBMIT_ATTEMPTS;
+  }
+  function seedAttempts(run, accountId, manual, now = Date.now()) {
+    if (manual) return 0;
+    return isFresh(run, accountId, now) ? run.attempts : 0;
+  }
   function stepsForPage(account, url) {
     const start = account.steps.findIndex((step) => matchesPattern(step.pagePattern, url));
     if (start === -1) return [];
@@ -374,7 +386,7 @@
   // src/storage.ts
   var STEP_KINDS = ["fill", "click", "waitFor"];
   function emptyStore() {
-    return { schemaVersion: SCHEMA_VERSION, accounts: [], recording: null, run: null };
+    return { schemaVersion: SCHEMA_VERSION, accounts: [], run: null };
   }
   function serialiseStore(store) {
     return JSON.stringify(store);
@@ -389,9 +401,6 @@
   function isAccount(value) {
     if (!isRecord(value)) return false;
     return typeof value.id === "string" && typeof value.name === "string" && typeof value.autoSubmit === "boolean" && Array.isArray(value.steps) && value.steps.every(isStep);
-  }
-  function isRecordingSession(value) {
-    return isRecord(value) && typeof value.accountId === "string" && typeof value.startedAt === "number";
   }
   function isRunState(value) {
     return isRecord(value) && typeof value.accountId === "string" && Number.isInteger(value.attempts) && typeof value.updatedAt === "number";
@@ -428,9 +437,8 @@
       store: {
         schemaVersion: SCHEMA_VERSION,
         accounts: (parsed.accounts ?? []).filter(isAccount),
-        // A bad run state or session is transient, not user data worth
-        // preserving — drop it rather than locking the whole store read-only.
-        recording: isRecordingSession(parsed.recording) ? parsed.recording : null,
+        // A bad run state is transient, not user data worth preserving — drop
+        // it rather than locking the whole store read-only.
         run: isRunState(parsed.run) ? parsed.run : null
       },
       readOnly: false,
@@ -451,7 +459,11 @@
         if (adapter.readOnly) {
           return { written: false, reason: adapter.lastError ?? "Config is read-only." };
         }
-        GM_setValue(STORE_KEY, serialiseStore(store));
+        try {
+          GM_setValue(STORE_KEY, serialiseStore(store));
+        } catch (error) {
+          return { written: false, reason: `Changes could not be saved: ${error.message}` };
+        }
         return { written: true };
       },
       /**
@@ -671,6 +683,8 @@
   var Ui = class {
     constructor(callbacks) {
       this.callbacks = callbacks;
+      /** Resolver of a modal currently awaiting an answer, so `clear()` can settle it. */
+      this.settlePending = null;
       this.host = document.createElement("div");
       this.host.id = HOST_ID;
       this.host.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;";
@@ -685,6 +699,8 @@
       if (!this.host.isConnected) document.body.appendChild(this.host);
     }
     clear() {
+      this.settlePending?.(null);
+      this.settlePending = null;
       this.layer.replaceChildren();
     }
     toast(message, kind = "info", ms = 6e3) {
@@ -742,6 +758,7 @@
      * never match anything and would otherwise just appear to do nothing.
      */
     renderPanel(accounts, invalidIds, readOnly, cb) {
+      this.layer.querySelector(".backdrop")?.remove();
       const backdrop = document.createElement("div");
       backdrop.className = "backdrop";
       backdrop.addEventListener("click", (event) => {
@@ -881,6 +898,12 @@
      */
     renderImportPreview(plan) {
       return new Promise((resolve) => {
+        const settle = (value) => {
+          this.settlePending = null;
+          resolve(value);
+        };
+        this.settlePending = settle;
+        this.layer.querySelector(".backdrop")?.remove();
         const backdrop = document.createElement("div");
         backdrop.className = "backdrop";
         const panel = document.createElement("div");
@@ -914,14 +937,14 @@
         cancel.textContent = "Cancel";
         cancel.addEventListener("click", () => {
           backdrop.remove();
-          resolve(null);
+          settle(null);
         });
         const apply = document.createElement("button");
         apply.className = "btn";
         apply.textContent = "Apply";
         apply.addEventListener("click", () => {
           backdrop.remove();
-          resolve(plan);
+          settle(plan);
         });
         actions.append(cancel, apply);
         body.appendChild(actions);
@@ -963,7 +986,6 @@
   };
 
   // src/main.ts
-  var ATTEMPTS_WINDOW_MS = 12e4;
   void (async function main() {
     const storage = createStorage();
     let store = await storage.load();
@@ -989,20 +1011,14 @@
       ui.toast(storage.lastError, "error", 1e4);
       return;
     }
-    const blocked = blockedAccountId();
-    if (matches.length === 1 && matches[0].id !== blocked) {
+    const blocked = matches.length === 1 && isAutoRunBlocked(store.run, matches[0].id);
+    if (matches.length === 1 && !blocked) {
       void run(matches[0], { manual: false });
     } else {
       ui.renderTrigger(
         matches,
         blocked ? `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts \u2014 click to try again.` : void 0
       );
-    }
-    function blockedAccountId() {
-      const state = store.run;
-      if (!state) return null;
-      if (Date.now() - state.updatedAt > ATTEMPTS_WINDOW_MS) return null;
-      return state.attempts >= MAX_SUBMIT_ATTEMPTS ? state.accountId : null;
     }
     async function persist(next) {
       store = next;
@@ -1017,7 +1033,7 @@
         ui.renderTrigger([account]);
         return;
       }
-      const attempts = opts.manual ? 0 : store.run?.accountId === account.id ? store.run.attempts : 0;
+      const attempts = seedAttempts(store.run, account.id, opts.manual);
       const report = await runSteps(steps, account.autoSubmit, document);
       if (report.submitted) {
         await persist({

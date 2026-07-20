@@ -13,7 +13,9 @@ This is hard to reverse because the dormancy contract, the menu-command entry po
 
 ## Decision
 
-Ship with `@match *://*/*`. On every page the script performs a single storage read and, if no account config's URL pattern matches the URL and there is no in-flight recording session or run cursor, it does nothing further — no DOM insertion, no observers, no UI. Unconfigured pages are reached through a Tampermonkey menu command rather than by editing the header.
+Ship with `@match *://*/*` plus `@noframes`. On every page the script performs a single storage read and, if no saved step's page pattern matches the URL, it does nothing further — no DOM insertion, no observers, no UI. Unconfigured pages are reached through a Tampermonkey menu command rather than by editing the header.
+
+`@noframes` is part of the decision rather than an afterthought: without it an attacker who knows a victim's login URL could embed it in a hidden iframe and have the script auto-fill and auto-submit credentials into it on their timing, and an ad-heavy page would multiply the dormant-path storage read by the number of subframes. The cost is that a login form hosted inside an iframe cannot be automated.
 
 ## Consequences
 

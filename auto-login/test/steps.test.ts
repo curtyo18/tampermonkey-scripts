@@ -1,12 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  activeRecordingAccount,
-  appendStep,
-  isRecordingStale,
-  startRecording,
-  stopRecording,
-} from '../src/recording';
-import { RECORDING_MAX_AGE_MS, SCHEMA_VERSION, type Store } from '../src/types';
+import { appendStep } from '../src/steps';
+import { SCHEMA_VERSION, type Store } from '../src/types';
 
 const PAGE = 'https://example.com/login*';
 
@@ -23,7 +17,6 @@ function store(overrides: Partial<Store> = {}): Store {
         updatedAt: 0,
       },
     ],
-    recording: null,
     run: null,
     ...overrides,
   };
@@ -93,38 +86,5 @@ describe('appendStep', () => {
     });
 
     expect(next.accounts[0].steps.filter((s) => s.isSubmit)).toHaveLength(1);
-  });
-});
-
-describe('recording sessions', () => {
-  it('starts and stops', () => {
-    const started = startRecording(store(), 'a1');
-    expect(started.recording?.accountId).toBe('a1');
-    expect(stopRecording(started).recording).toBeNull();
-  });
-
-  it('treats an old session as stale', () => {
-    const session = { accountId: 'a1', startedAt: 0 };
-    expect(isRecordingStale(session, RECORDING_MAX_AGE_MS + 1)).toBe(true);
-    expect(isRecordingStale(session, RECORDING_MAX_AGE_MS - 1)).toBe(false);
-  });
-
-  it('returns null for a stale session', () => {
-    const base = store({ recording: { accountId: 'a1', startedAt: 0 } });
-    expect(activeRecordingAccount(base, RECORDING_MAX_AGE_MS + 1)).toBeNull();
-  });
-
-  it('returns null when the session points at a deleted account', () => {
-    const base = store({ accounts: [], recording: { accountId: 'a1', startedAt: Date.now() } });
-    expect(activeRecordingAccount(base)).toBeNull();
-  });
-
-  it('returns null when there is no session at all', () => {
-    expect(activeRecordingAccount(store())).toBeNull();
-  });
-
-  it('returns the account for a live session', () => {
-    const base = store({ recording: { accountId: 'a1', startedAt: Date.now() } });
-    expect(activeRecordingAccount(base)?.id).toBe('a1');
   });
 });

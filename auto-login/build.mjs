@@ -10,6 +10,7 @@ const meta = `// ==UserScript==
 // @description  One-click credential fill for login pages you configure through an injected UI. Dev/test accounts only.
 // @author       Curt Radford
 // @match        *://*/*
+// @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener

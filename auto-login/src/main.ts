@@ -1,7 +1,13 @@
 import { compilePattern } from './match';
 import { pickElement } from './picker';
-import { appendStep } from './recording';
-import { accountMatchesPage, runSteps, stepsForPage } from './runner';
+import { appendStep } from './steps';
+import {
+  accountMatchesPage,
+  isAutoRunBlocked,
+  runSteps,
+  seedAttempts,
+  stepsForPage,
+} from './runner';
 import { applyMergePlan, buildMergePlan, decodeShare, encodeShare } from './share';
 import { createStorage, emptyStore } from './storage';
 import { Ui } from './ui';
@@ -9,12 +15,10 @@ import {
   MAX_SUBMIT_ATTEMPTS,
   newId,
   type AccountConfig,
+  type SelectorCandidate,
   type Step,
   type Store,
 } from './types';
-
-/** A run state older than this describes a login attempt you have moved on from. */
-const ATTEMPTS_WINDOW_MS = 120_000;
 
 void (async function main() {
   const storage = createStorage();
@@ -56,22 +60,16 @@ void (async function main() {
     return;
   }
 
-  const blocked = blockedAccountId();
-  if (matches.length === 1 && matches[0].id !== blocked) {
+  const blocked = matches.length === 1 && isAutoRunBlocked(store.run, matches[0].id);
+  if (matches.length === 1 && !blocked) {
     void run(matches[0], { manual: false });
   } else {
     ui.renderTrigger(
       matches,
-      blocked ? `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts — click to try again.` : undefined,
+      blocked
+        ? `Automatic login paused after ${MAX_SUBMIT_ATTEMPTS} attempts — click to try again.`
+        : undefined,
     );
-  }
-
-  /** The account whose automatic runs the lockout guard has suppressed, if any. */
-  function blockedAccountId(): string | null {
-    const state = store.run;
-    if (!state) return null;
-    if (Date.now() - state.updatedAt > ATTEMPTS_WINDOW_MS) return null;
-    return state.attempts >= MAX_SUBMIT_ATTEMPTS ? state.accountId : null;
   }
 
   async function persist(next: Store): Promise<void> {
@@ -92,9 +90,7 @@ void (async function main() {
       return;
     }
 
-    // A human deciding to retry is not the failure mode the guard exists for,
-    // so an explicit click clears the count rather than being refused.
-    const attempts = opts.manual ? 0 : (store.run?.accountId === account.id ? store.run.attempts : 0);
+    const attempts = seedAttempts(store.run, account.id, opts.manual);
 
     const report = await runSteps(steps, account.autoSubmit, document);
 
@@ -270,7 +266,7 @@ void (async function main() {
     openPanel();
   }
 
-  function chooseSelector(candidates: Array<{ selector: string; label: string; matchCount: number; resolvesToPicked: boolean }>): string | null {
+  function chooseSelector(candidates: SelectorCandidate[]): string | null {
     // Only candidates that actually address the picked element are offered by
     // default — a duplicated id is unique-looking and still wrong.
     const usable = candidates.filter((c) => c.resolvesToPicked && c.matchCount === 1);

@@ -2,7 +2,6 @@ import {
   SCHEMA_VERSION,
   STORE_KEY,
   type AccountConfig,
-  type RecordingSession,
   type RunState,
   type SaveResult,
   type StepKind,
@@ -20,7 +19,7 @@ export interface ParseResult {
 const STEP_KINDS: StepKind[] = ['fill', 'click', 'waitFor'];
 
 export function emptyStore(): Store {
-  return { schemaVersion: SCHEMA_VERSION, accounts: [], recording: null, run: null };
+  return { schemaVersion: SCHEMA_VERSION, accounts: [], run: null };
 }
 
 export function serialiseStore(store: Store): string {
@@ -58,10 +57,6 @@ export function isAccount(value: unknown): value is AccountConfig {
     Array.isArray(value.steps) &&
     value.steps.every(isStep)
   );
-}
-
-function isRecordingSession(value: unknown): value is RecordingSession {
-  return isRecord(value) && typeof value.accountId === 'string' && typeof value.startedAt === 'number';
 }
 
 function isRunState(value: unknown): value is RunState {
@@ -118,9 +113,8 @@ export function parseStore(raw: string | undefined): ParseResult {
     store: {
       schemaVersion: SCHEMA_VERSION,
       accounts: (parsed.accounts ?? []).filter(isAccount),
-      // A bad run state or session is transient, not user data worth
-      // preserving — drop it rather than locking the whole store read-only.
-      recording: isRecordingSession(parsed.recording) ? parsed.recording : null,
+      // A bad run state is transient, not user data worth preserving — drop
+      // it rather than locking the whole store read-only.
       run: isRunState(parsed.run) ? parsed.run : null,
     },
     readOnly: false,
@@ -150,7 +144,14 @@ export function createStorage(): StorageAdapter & { readOnly: boolean; lastError
       if (adapter.readOnly) {
         return { written: false, reason: adapter.lastError ?? 'Config is read-only.' };
       }
-      GM_setValue(STORE_KEY, serialiseStore(store));
+      try {
+        GM_setValue(STORE_KEY, serialiseStore(store));
+      } catch (error) {
+        // Quota exhaustion or a serialisation failure. Reported rather than
+        // thrown: callers invoke save() from un-awaited handlers, where a
+        // rejection would vanish with no toast.
+        return { written: false, reason: `Changes could not be saved: ${(error as Error).message}` };
+      }
       return { written: true };
     },
 

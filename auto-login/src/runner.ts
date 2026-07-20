@@ -1,5 +1,44 @@
 import { matchesPattern } from './match';
-import { WAIT_TIMEOUT_MS, type AccountConfig, type RunReport, type Step } from './types';
+import {
+  ATTEMPTS_WINDOW_MS,
+  MAX_SUBMIT_ATTEMPTS,
+  WAIT_TIMEOUT_MS,
+  type AccountConfig,
+  type RunReport,
+  type RunState,
+  type Step,
+} from './types';
+
+/**
+ * A run state stops counting once it is outside the window — otherwise a
+ * count from an abandoned attempt an hour ago still suppresses today's.
+ */
+function isFresh(run: RunState | null, accountId: string, now: number): run is RunState {
+  return !!run && run.accountId === accountId && now - run.updatedAt <= ATTEMPTS_WINDOW_MS;
+}
+
+/** Whether the lockout guard should suppress an AUTOMATIC run of this account. */
+export function isAutoRunBlocked(run: RunState | null, accountId: string, now = Date.now()): boolean {
+  return isFresh(run, accountId, now) && run.attempts >= MAX_SUBMIT_ATTEMPTS;
+}
+
+/**
+ * The attempt count a new run starts from.
+ *
+ * A manual click always starts at zero: the guard exists to stop an automatic
+ * loop, not to refuse a human who has decided to retry. Reads the same freshness
+ * rule as `isAutoRunBlocked`, so a released guard does not immediately re-arm
+ * from a stale count.
+ */
+export function seedAttempts(
+  run: RunState | null,
+  accountId: string,
+  manual: boolean,
+  now = Date.now(),
+): number {
+  if (manual) return 0;
+  return isFresh(run, accountId, now) ? run.attempts : 0;
+}
 
 /**
  * The steps belonging to the page at `url`: the first maximal contiguous run of

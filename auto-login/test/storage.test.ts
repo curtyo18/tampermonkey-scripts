@@ -46,7 +46,6 @@ function validStore(): Store {
         updatedAt: 2,
       },
     ],
-    recording: null,
     run: null,
   };
 }
@@ -90,7 +89,6 @@ describe('parseStore', () => {
   it('defaults missing top-level fields', () => {
     const result = parseStore(JSON.stringify({ schemaVersion: SCHEMA_VERSION }));
     expect(result.store.accounts).toEqual([]);
-    expect(result.store.recording).toBeNull();
     expect(result.store.run).toBeNull();
   });
 
@@ -137,10 +135,6 @@ describe('parseStore', () => {
     expect(result.store.accounts).toHaveLength(1);
   });
 
-  it('drops an unusable recording session', () => {
-    const bad = { ...validStore(), recording: { accountId: 42 } };
-    expect(parseStore(JSON.stringify(bad)).store.recording).toBeNull();
-  });
 });
 
 describe('createStorage', () => {

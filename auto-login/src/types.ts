@@ -3,12 +3,10 @@ export const SCHEMA_VERSION = 1;
 
 /** Default ceiling for a `waitFor` step. */
 export const WAIT_TIMEOUT_MS = 8000;
-/** A run cursor older than this is stale and gets discarded rather than resumed. */
-export const RUN_RESUME_MAX_AGE_MS = 30_000;
+/** Consecutive automatic submits are only counted together inside this window. */
+export const ATTEMPTS_WINDOW_MS = 120_000;
 /** Guards against an auto-submitting account config looping a bad credential into a lockout. */
 export const MAX_SUBMIT_ATTEMPTS = 3;
-/** A recording session older than this is abandoned. */
-export const RECORDING_MAX_AGE_MS = 600_000;
 
 export type StepKind = 'fill' | 'click' | 'waitFor';
 
@@ -40,11 +38,6 @@ export interface AccountConfig {
   updatedAt: number;
 }
 
-export interface RecordingSession {
-  accountId: string;
-  startedAt: number;
-}
-
 /**
  * Tracks consecutive automatic submits for one account so a misconfigured
  * config cannot loop bad credentials into a lockout. Deliberately NOT a step
@@ -60,7 +53,6 @@ export interface RunState {
 export interface Store {
   schemaVersion: number;
   accounts: AccountConfig[];
-  recording: RecordingSession | null;
   run: RunState | null;
 }
 
@@ -94,8 +86,9 @@ export interface SelectorCandidate {
 
 /**
  * There is deliberately no 'suspended' outcome. A step that navigates destroys
- * the JS realm mid-await, so `runSteps` never returns at all in that case —
- * resume is carried by the persisted RunCursor, not by a return value.
+ * the JS realm mid-await, so `runSteps` never returns at all in that case.
+ * Position in a flow is re-derived from the URL on the next load, never
+ * carried across — see docs/adr/0004.
  */
 export type RunOutcome = 'completed' | 'halted-before-submit' | 'failed';
 

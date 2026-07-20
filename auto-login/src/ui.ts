@@ -117,6 +117,8 @@ export class Ui {
   readonly host: HTMLElement;
   private readonly root: ShadowRoot;
   private readonly layer: HTMLDivElement;
+  /** Resolver of a modal currently awaiting an answer, so `clear()` can settle it. */
+  private settlePending: ((value: MergePlanEntry[] | null) => void) | null = null;
 
   constructor(private readonly callbacks: TriggerCallbacks) {
     this.host = document.createElement('div');
@@ -139,6 +141,11 @@ export class Ui {
   }
 
   clear(): void {
+    // Settle anything awaiting a dialog we are about to destroy. Without this
+    // an open import preview leaves its caller awaiting a promise whose only
+    // resolvers were listeners on the removed backdrop.
+    this.settlePending?.(null);
+    this.settlePending = null;
     this.layer.replaceChildren();
   }
 
@@ -211,6 +218,10 @@ export class Ui {
     readOnly: ReadOnlyState,
     cb: PanelCallbacks,
   ): void {
+    // One panel at a time — opening a second stacks a full-screen backdrop over
+    // a stale copy of the first.
+    this.layer.querySelector('.backdrop')?.remove();
+
     const backdrop = document.createElement('div');
     backdrop.className = 'backdrop';
     backdrop.addEventListener('click', (event) => {
@@ -391,6 +402,14 @@ export class Ui {
    */
   renderImportPreview(plan: MergePlanEntry[]): Promise<MergePlanEntry[] | null> {
     return new Promise((resolve) => {
+      const settle = (value: MergePlanEntry[] | null): void => {
+        this.settlePending = null;
+        resolve(value);
+      };
+      this.settlePending = settle;
+
+      this.layer.querySelector('.backdrop')?.remove();
+
       const backdrop = document.createElement('div');
       backdrop.className = 'backdrop';
 
@@ -432,7 +451,7 @@ export class Ui {
       cancel.textContent = 'Cancel';
       cancel.addEventListener('click', () => {
         backdrop.remove();
-        resolve(null);
+        settle(null);
       });
 
       const apply = document.createElement('button');
@@ -440,7 +459,7 @@ export class Ui {
       apply.textContent = 'Apply';
       apply.addEventListener('click', () => {
         backdrop.remove();
-        resolve(plan);
+        settle(plan);
       });
 
       actions.append(cancel, apply);
