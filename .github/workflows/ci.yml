@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the same branch supersedes any run still in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - auto-login
+          - jira/jira-ticket-extractor
+          - gitlab/gitlab-code-search
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # The committed bundle is what @downloadURL serves straight off master, so a
+      # stale one ships broken code to anyone who auto-updates. Rebuild and require
+      # the result to be byte-identical to what was committed.
+      - name: Committed bundle matches source
+        run: |
+          npm run build
+          if ! git diff --exit-code -- '*.user.js'; then
+            echo "::error::Committed bundle is out of date. Run 'npm run build' in ${{ matrix.project }} and commit the result."
+            exit 1
+          fi
